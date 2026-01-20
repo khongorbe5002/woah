@@ -179,3 +179,17 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+
+# Dataset folders
+data/
+datasets/
+
+# Model weights
+*.pt
+*.pth
+*.h5
+*.onnx
+
+# Mac system files
+.DS_Store
