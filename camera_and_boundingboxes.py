@@ -4,11 +4,12 @@ import time
 import numpy as np
 
 model = YOLO("yolov10n.pt")
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(1)
 
 OBSTACLE_CLASSES = [
     "person", "bicycle", "car", "chair", "bench", "truck", "traffic light",
-    "fire hydrant", "stop sign", "stairs","phone","scooter","motorcycle" # stairs requires custom model later
+    "fire hydrant", "stop sign", "stairs","phone","scooter","motorcycle",
+    "tree","bushes","cup","cups","bowl"  # stairs requires custom model later
 ]
 
 # Grid visualization parameters
@@ -55,9 +56,9 @@ while True:
 
             label = model.names[cls]
 
-            if label in OBSTACLE_CLASSES and conf > 0.6:
+            if label in OBSTACLE_CLASSES and conf > 0.4:
                 cv2.putText(frame, f"This is a:{label} with:{conf:.1f} conf", (int(x1), int(y1)-10),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 2)
                 print(f"ALERT: Object detected, this is a:{label} with:{conf:.1f} conf")
                 print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
                 
