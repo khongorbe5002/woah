@@ -83,8 +83,10 @@ while True:
             
     cv2.imshow("Obstacle Detection Demo", frame)
     cv2.imshow("Filtered Detections - Grid View", grid_canvas)
-    
-    if cv2.waitKey(1) == 27:
+
+    # Quit on ESC or 'q' / 'Q'
+    key = cv2.waitKey(1) & 0xFF
+    if key == 27 or key == ord('q') or key == ord('Q'):
         break
 
 cap.release()

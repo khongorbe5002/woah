@@ -36,7 +36,10 @@ while True:
                 print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
             
     cv2.imshow("Obstacle Detection Demo", frame)
-    if cv2.waitKey(1) == 27:
+
+    # Quit on ESC or 'q' / 'Q'
+    key = cv2.waitKey(1) & 0xFF
+    if key == 27 or key == ord('q') or key == ord('Q'):
         break
 
 cap.release()
