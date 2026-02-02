@@ -142,6 +142,8 @@ PROCESS_EVERY_N = 8
 SHOW_EVERY_N = 1
 # Show running FPS + average inference ms on the camera window
 SHOW_PERF_OVERLAY = True
+# Classes to draw on the camera window. Set to ['person'] to show only people, or [] to show all.
+CAMERA_SHOW_CLASSES = ['person']
 
 # Obstacle alert settings (reduce print spam)
 OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert
@@ -328,15 +330,43 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
     return detections
 
 
-# Performance counters
+# Performance counters + asynchronous worker (decouple inference from display)
+import threading, queue
+
 frame_counter = 0
 fps_last_time = time.time()
 frames_since_last = 0
 fps = 0.0
 avg_infer_ms = 0.0
 inference_count = 0
+# last_detections holds the most recent detections returned by the worker
 last_detections = []
 last_alert_times = {}
+
+# Background inference queue (capacity 1) and synchronization
+infer_q = queue.Queue(maxsize=1)
+infer_lock = threading.Lock()
+stop_infer = threading.Event()
+
+def _inference_worker():
+    global last_detections, avg_infer_ms, inference_count
+    while not stop_infer.is_set():
+        try:
+            frame_to_infer = infer_q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        t0 = time.time()
+        dets = run_detection(frame_to_infer, input_size=INPUT_SIZE)
+        infer_ms = (time.time() - t0) * 1000.0
+        # update shared state under lock
+        with infer_lock:
+            last_detections = dets
+            inference_count += 1
+            avg_infer_ms = ((avg_infer_ms * (inference_count - 1)) + infer_ms) / inference_count if inference_count > 0 else infer_ms
+
+# Start worker thread
+infer_thread = threading.Thread(target=_inference_worker, daemon=True)
+infer_thread.start()
 
 while True:
     ret, frame = cap.read()
@@ -357,22 +387,20 @@ while True:
     # Create grid canvas for this frame
     grid_canvas = create_grid_canvas()
 
-    # Decide whether to process this frame (skip some frames to save CPU)
+    # Decide whether to request an inference for this frame (skip some frames to save CPU)
     process_this = (frame_counter % PROCESS_EVERY_N == 0)
 
-    infer_ms = 0.0
-    detections = []
+    # Use cached detections for drawing; inference runs asynchronously in the worker
+    with infer_lock:
+        detections = list(last_detections)
+
     if process_this:
-        t0 = time.time()
-        detections = run_detection(frame, input_size=INPUT_SIZE)
-        infer_ms = (time.time() - t0) * 1000.0
-        inference_count += 1
-        # running average for inference ms
-        avg_infer_ms = ((avg_infer_ms * (inference_count - 1)) + infer_ms) / inference_count if inference_count > 0 else infer_ms
-        last_detections = detections
-    else:
-        # reuse last detections for smoother display when skipping processing
-        detections = last_detections
+        try:
+            # Non-blocking: queue the latest frame for the worker (drop if previous still processing)
+            infer_q.put_nowait(frame.copy())
+        except queue.Full:
+            # Worker busy — skip this inference and keep previous detections
+            pass
 
     # Update FPS once per second
     if time.time() - fps_last_time >= 1.0:
@@ -398,17 +426,18 @@ while True:
         if label in OBSTACLE_CLASSES and conf > OBSTACLE_ALERT_CONF:
             draw_color = (0, 0, 255)  # red for obstacles
 
-        # Draw box on main frame
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), draw_color, 2)
+        # Draw box + label only on camera for classes in CAMERA_SHOW_CLASSES
+        if label in CAMERA_SHOW_CLASSES:
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), draw_color, 2)
 
-        # Draw label and confidence on the camera window (always)
-        text = f"{label} {conf:.2f}"
-        (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-        text_x = max(0, min(int(x1), frame.shape[1] - text_w - 1))
-        text_y = max(text_h + 2, int(y1) - 6)
-        # background rectangle for text for visibility
-        cv2.rectangle(frame, (text_x, text_y - text_h - baseline), (text_x + text_w, text_y + baseline), draw_color, -1)
-        cv2.putText(frame, text, (text_x, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # Draw label and confidence on the camera window
+            text = f"{label} {conf:.2f}"
+            (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            text_x = max(0, min(int(x1), frame.shape[1] - text_w - 1))
+            text_y = max(text_h + 2, int(y1) - 6)
+            # background rectangle for text for visibility
+            cv2.rectangle(frame, (text_x, text_y - text_h - baseline), (text_x + text_w, text_y + baseline), draw_color, -1)
+            cv2.putText(frame, text, (text_x, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         # If detection is an obstacle above threshold, print alert and draw on grid (with cooldown)
         if label in OBSTACLE_CLASSES and conf > OBSTACLE_ALERT_CONF:
@@ -446,6 +475,13 @@ while True:
     key = cv2.waitKey(1) & 0xFF
     if key == 27 or key == ord('q') or key == ord('Q'):
         break
+
+# Shutdown worker cleanly
+stop_infer.set()
+try:
+    infer_thread.join(timeout=1.0)
+except Exception:
+    pass
 
 cap.release()
 cv2.destroyAllWindows()
