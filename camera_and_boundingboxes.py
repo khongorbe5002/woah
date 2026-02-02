@@ -2,6 +2,7 @@ import os
 import cv2
 import time
 import numpy as np
+import json
 
 # Decide backend safely. On some ARM systems importing torch causes SIGILL and kills the process.
 # To avoid that, probe torch import in a subprocess first and only import ultralytics if it succeeds.
@@ -146,7 +147,15 @@ SHOW_PERF_OVERLAY = True
 CAMERA_SHOW_CLASSES = []
 
 # Obstacle alert settings (reduce print spam)
-OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert
+OBSTACLE_ALERT_CONF = 0.7  # minimum confidence to consider printing an alert
+# Only display (draw/print) detections above this confidence (set to 0.7 to show >0.7 only)
+DISPLAY_CONFIDENCE_THRESHOLD = 0.7
+# If True, draw the detections that appear on the grid also onto the camera frame
+DRAW_GRID_ON_CAMERA = True
+# Diagnostic capture: save annotated frames and raw detection logs for debugging
+DIAGNOSTIC_SAVE = True
+DIAGNOSTIC_OUTPUT_DIR = "diagnostic"
+DIAGNOSTIC_MAX_SAVED_FRAMES = 200
 ALERT_PRINT_COOLDOWN = 3.0  # seconds between printing the same label alert
 
 # Performance: allow OpenCV to use multiple CPU threads
@@ -342,6 +351,14 @@ inference_count = 0
 # last_detections holds the most recent detections returned by the worker
 last_detections = []
 last_alert_times = {}
+# Diagnostic records
+diag_records = []
+frames_saved = 0
+if DIAGNOSTIC_SAVE:
+    try:
+        os.makedirs(DIAGNOSTIC_OUTPUT_DIR, exist_ok=True)
+    except Exception:
+        pass
 
 # Background inference queue (capacity 1) and synchronization
 infer_q = queue.Queue(maxsize=1)
@@ -415,6 +432,10 @@ while True:
         cls = det["cls"]
         conf = det["conf"]
 
+        # Only display detections above the configured confidence threshold
+        if conf <= DISPLAY_CONFIDENCE_THRESHOLD:
+            continue
+
         # Get label name
         if BACKEND == "ultralytics" and MODEL is not None:
             label = MODEL_NAMES[cls] if MODEL_NAMES is not None and cls in MODEL_NAMES else str(cls)
@@ -462,6 +483,16 @@ while True:
             cv2.rectangle(grid_canvas, (grid_x1, grid_y1), (grid_x2, grid_y2), BOX_COLOR, 2)
             cv2.putText(grid_canvas, f"{label} ({conf:.2f})", (grid_x1, grid_y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_COLOR, 1)
+
+            # Also draw the same detection onto the camera frame when enabled
+            if DRAW_GRID_ON_CAMERA:
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), BOX_COLOR, 2)
+                text = f"{label} {conf:.2f}"
+                (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+                text_x = max(0, min(int(x1), frame.shape[1] - text_w - 1))
+                text_y = max(text_h + 2, int(y1) - 6)
+                cv2.rectangle(frame, (text_x, text_y - text_h - baseline), (text_x + text_w, text_y + baseline), BOX_COLOR, -1)
+                cv2.putText(frame, text, (text_x, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
 # Overlay performance info
         if SHOW_PERF_OVERLAY:
@@ -470,6 +501,24 @@ while True:
 
         cv2.imshow("Obstacle Detection Demo", frame)
     cv2.imshow("Filtered Detections - Grid View", grid_canvas)
+
+    # Diagnostic capture: save annotated camera frames and detection records
+    if DIAGNOSTIC_SAVE and frames_saved < DIAGNOSTIC_MAX_SAVED_FRAMES:
+        try:
+            fname = os.path.join(DIAGNOSTIC_OUTPUT_DIR, f"frame_{frame_counter:06d}.jpg")
+            cv2.imwrite(fname, frame)
+            rec = {"frame": frame_counter, "time": time.time(), "detections": []}
+            for d in detections:
+                dcls = d.get("cls")
+                if BACKEND == "ultralytics" and MODEL is not None:
+                    lab = MODEL_NAMES[dcls] if MODEL_NAMES is not None and dcls in MODEL_NAMES else str(dcls)
+                else:
+                    lab = COCO_NAMES[dcls] if 0 <= dcls < len(COCO_NAMES) else str(dcls)
+                rec["detections"].append({"label": lab, "cls": dcls, "conf": float(d.get("conf")), "bbox": [int(d.get("x1")), int(d.get("y1")), int(d.get("x2")), int(d.get("y2"))]})
+            diag_records.append(rec)
+            frames_saved += 1
+        except Exception:
+            pass
 
     # Quit on ESC or 'q' / 'Q'
     key = cv2.waitKey(1) & 0xFF
@@ -482,6 +531,16 @@ try:
     infer_thread.join(timeout=1.0)
 except Exception:
     pass
+
+# Save diagnostic logs if requested
+if DIAGNOSTIC_SAVE:
+    try:
+        outpath = os.path.join(DIAGNOSTIC_OUTPUT_DIR, "detections.json")
+        with open(outpath, "w") as f:
+            json.dump(diag_records, f, indent=2)
+        print(f"Saved {len(diag_records)} diagnostic records to {outpath}")
+    except Exception as e:
+        print("Failed to save diagnostic records:", e)
 
 cap.release()
 cv2.destroyAllWindows()
