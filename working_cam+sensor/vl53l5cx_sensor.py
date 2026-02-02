@@ -12,14 +12,14 @@ import numpy as np
 class VL53L5CXSensor:
     """Python interface for VL53L5CX sensor - equivalent to Arduino code"""
     
-    def __init__(self, port=None, baudrate=115200, use_serial=True):
+    def __init__(self, port=None, baudrate=921600, use_serial=True):
         """
         Initialize sensor
         
         Args:
             port: Serial port (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux)
                  If None, will auto-detect ESP32
-            baudrate: Serial baud rate (default 115200)
+            baudrate: Serial baud rate (default 921600 to match ESP32)
             use_serial: If True, use serial communication. If False, use direct I2C
         """
         self.use_serial = use_serial
@@ -106,38 +106,41 @@ class VL53L5CXSensor:
         # Read all available data
         data = self.serial_conn.read(self.serial_conn.in_waiting).decode('utf-8', errors='ignore')
         
+        # Debug: print raw data
+        print(f"Raw data received: {repr(data[:200])}")
+        
         # Parse the 8x8 array from serial output
-        # Format: tab-separated values, 8 rows, 8 columns, followed by "END_DATA"
-        lines = data.strip().split('\n')
+        # Format: 8 rows of tab or space-separated values, separated by newline
+        # Each block is separated by a space line
+        lines = data.split('\n')
         distances = []
         
         for line in lines:
             line = line.strip()
-            # Skip delimiter line
-            if line == "END_DATA":
-                # If we have 8 rows, return the array
+            
+            # Skip empty lines and space separators
+            if not line or line == " ":
+                # If we have 8 rows collected, return them
                 if len(distances) == 8:
                     return np.array(distances)
-                else:
-                    # Reset if incomplete
-                    distances = []
                 continue
             
-            if line and '\t' in line:
-                # Try to parse row
-                try:
-                    row = [int(x.strip()) for x in line.split('\t') if x.strip()]
-                    if len(row) == 8:
-                        distances.append(row)
-                    elif len(row) > 0:
-                        # Incomplete row, reset
-                        distances = []
-                except ValueError:
-                    continue
-        
-        # If we have a complete 8x8 array without END_DATA marker, return it anyway
-        if len(distances) == 8:
-            return np.array(distances)
+            # Try to parse row (tab or space separated)
+            try:
+                # Split by tab or space
+                values = []
+                for val in line.split():
+                    values.append(int(val))
+                
+                if len(values) == 8:
+                    distances.append(values)
+                    # Return immediately when we get 8 rows
+                    if len(distances) == 8:
+                        return np.array(distances)
+            except ValueError:
+                # If we can't parse a line as numbers, reset
+                distances = []
+                continue
         
         return None
     
