@@ -36,7 +36,7 @@ BOX_COLOR = (0, 255, 0)  # Green boxes
 # Sensor grid visualization parameters
 SENSOR_GRID_SIZE = 600  # Size of sensor grid window (square)
 SENSOR_CELL_SIZE = SENSOR_GRID_SIZE // 8  # Each cell is 1/8 of the grid
-SENSOR_MAX_DISTANCE = 4000  # Maximum distance in mm for color scaling
+SENSOR_MAX_DISTANCE = 3300  # Maximum distance in mm for color scaling (raw sensor max)
 
 def create_grid_canvas():
     """Create a black canvas with a grid"""
@@ -77,14 +77,17 @@ def create_sensor_grid(sensor_data):
             y2 = (row + 1) * SENSOR_CELL_SIZE
             
             # Color mapping: closer objects = red/orange, farther = blue/green
-            # Normalize distance to 0-1 range (clamp to max distance)
-            normalized_dist = min(distance / SENSOR_MAX_DISTANCE, 1.0)
+            # Use raw distance in mm (0-3300), clamp to max distance
+            clamped_dist = min(distance, SENSOR_MAX_DISTANCE)
             
-            if distance == 0 or distance > SENSOR_MAX_DISTANCE:
-                # Invalid or out of range - gray
+            if distance == 0:
+                # Invalid - gray
                 color = (50, 50, 50)
             else:
                 # Color gradient: red (close) -> yellow -> green -> blue (far)
+                # Map 0-3300 to 0-1
+                normalized_dist = clamped_dist / SENSOR_MAX_DISTANCE
+                
                 if normalized_dist < 0.25:
                     # Close: Red to Orange
                     r = 255
@@ -142,6 +145,9 @@ while True:
     ret, frame = cap.read()
     if not ret:
         break
+    
+    # Flip camera horizontally
+    frame = cv2.flip(frame, 1)
     
     # Create grid canvas for this frame
     grid_canvas = create_grid_canvas()
