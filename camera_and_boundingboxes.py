@@ -142,8 +142,8 @@ PROCESS_EVERY_N = 8
 SHOW_EVERY_N = 1
 # Show running FPS + average inference ms on the camera window
 SHOW_PERF_OVERLAY = True
-# Classes to draw on the camera window. Set to ['person'] to show only people, or [] to show all.
-CAMERA_SHOW_CLASSES = ['person']
+# Classes to draw on the camera window. Set to ['person'] to show only people, or [] to show none (hide overlays).
+CAMERA_SHOW_CLASSES = []
 
 # Obstacle alert settings (reduce print spam)
 OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert
