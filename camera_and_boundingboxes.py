@@ -2,7 +2,6 @@ import os
 import cv2
 import time
 import numpy as np
-import json
 
 # Decide backend safely. On some ARM systems importing torch causes SIGILL and kills the process.
 # To avoid that, probe torch import in a subprocess first and only import ultralytics if it succeeds.
@@ -152,10 +151,12 @@ OBSTACLE_ALERT_CONF = 0.7  # minimum confidence to consider printing an alert
 DISPLAY_CONFIDENCE_THRESHOLD = 0.7
 # If True, draw the detections that appear on the grid also onto the camera frame
 DRAW_GRID_ON_CAMERA = True
-# Diagnostic capture: save annotated frames and raw detection logs for debugging
-DIAGNOSTIC_SAVE = True
-DIAGNOSTIC_OUTPUT_DIR = "diagnostic"
-DIAGNOSTIC_MAX_SAVED_FRAMES = 200
+
+# NMS and box filtering to reduce false positives
+NMS_THRESHOLD = 0.45  # NMS IoU threshold
+MIN_BOX_AREA_RATIO = 0.001  # minimum box area relative to image area
+MAX_BOX_AREA_RATIO = 0.95   # maximum box area relative to image area
+
 ALERT_PRINT_COOLDOWN = 3.0  # seconds between printing the same label alert
 
 # Performance: allow OpenCV to use multiple CPU threads
@@ -198,7 +199,7 @@ COCO_NAMES = [
 
 
 # Detection helper that returns list of detections: dicts with x1,y1,x2,y2,cls,conf
-def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_threshold=0.45, input_size=640):
+def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=DISPLAY_CONFIDENCE_THRESHOLD, nms_threshold=NMS_THRESHOLD, input_size=640):
     h, w = frame.shape[:2]
     detections = []
 
@@ -279,6 +280,15 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
                     bh *= scale_y
                     x1 = int(x_c - bw / 2)
                     y1 = int(y_c - bh / 2)
+
+                    # Basic sanity / size filters to reduce false positives
+                    if bw <= 2 or bh <= 2:
+                        continue
+                    area = float(bw) * float(bh)
+                    area_ratio = area / float(w * h)
+                    if area_ratio < MIN_BOX_AREA_RATIO or area_ratio > MAX_BOX_AREA_RATIO:
+                        continue
+
                     boxes_xywh.append([x1, y1, int(bw), int(bh)])
                     scores.append(float(conf))
                     class_ids.append(class_id)
@@ -312,6 +322,15 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
                         bh_px = bh * h
                         x1 = int(x_c_px - bw_px / 2)
                         y1 = int(y_c_px - bh_px / 2)
+
+                        # Basic sanity / size filters
+                        if bw_px <= 2 or bh_px <= 2:
+                            continue
+                        area = float(bw_px) * float(bh_px)
+                        area_ratio = area / float(w * h)
+                        if area_ratio < MIN_BOX_AREA_RATIO or area_ratio > MAX_BOX_AREA_RATIO:
+                            continue
+
                         boxes_xywh.append([x1, y1, int(bw_px), int(bh_px)])
                         scores.append(float(conf))
                         class_ids.append(class_id)
@@ -325,8 +344,17 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
             if len(idxs) > 0:
                 for i in idxs.flatten():
                     x1, y1, bw, bh = boxes_xywh[i]
+                    # Clamp box coords to frame and validate
+                    x2 = x1 + bw
+                    y2 = y1 + bh
+                    x1c = max(0, min(int(x1), w - 1))
+                    y1c = max(0, min(int(y1), h - 1))
+                    x2c = max(0, min(int(x2), w - 1))
+                    y2c = max(0, min(int(y2), h - 1))
+                    if x2c <= x1c or y2c <= y1c:
+                        continue
                     detections.append({
-                        "x1": int(x1), "y1": int(y1), "x2": int(x1 + bw), "y2": int(y1 + bh),
+                        "x1": int(x1c), "y1": int(y1c), "x2": int(x2c), "y2": int(y2c),
                         "cls": int(class_ids[i]), "conf": float(scores[i])
                     })
 
@@ -351,14 +379,6 @@ inference_count = 0
 # last_detections holds the most recent detections returned by the worker
 last_detections = []
 last_alert_times = {}
-# Diagnostic records
-diag_records = []
-frames_saved = 0
-if DIAGNOSTIC_SAVE:
-    try:
-        os.makedirs(DIAGNOSTIC_OUTPUT_DIR, exist_ok=True)
-    except Exception:
-        pass
 
 # Background inference queue (capacity 1) and synchronization
 infer_q = queue.Queue(maxsize=1)
@@ -502,24 +522,6 @@ while True:
         cv2.imshow("Obstacle Detection Demo", frame)
     cv2.imshow("Filtered Detections - Grid View", grid_canvas)
 
-    # Diagnostic capture: save annotated camera frames and detection records
-    if DIAGNOSTIC_SAVE and frames_saved < DIAGNOSTIC_MAX_SAVED_FRAMES:
-        try:
-            fname = os.path.join(DIAGNOSTIC_OUTPUT_DIR, f"frame_{frame_counter:06d}.jpg")
-            cv2.imwrite(fname, frame)
-            rec = {"frame": frame_counter, "time": time.time(), "detections": []}
-            for d in detections:
-                dcls = d.get("cls")
-                if BACKEND == "ultralytics" and MODEL is not None:
-                    lab = MODEL_NAMES[dcls] if MODEL_NAMES is not None and dcls in MODEL_NAMES else str(dcls)
-                else:
-                    lab = COCO_NAMES[dcls] if 0 <= dcls < len(COCO_NAMES) else str(dcls)
-                rec["detections"].append({"label": lab, "cls": dcls, "conf": float(d.get("conf")), "bbox": [int(d.get("x1")), int(d.get("y1")), int(d.get("x2")), int(d.get("y2"))]})
-            diag_records.append(rec)
-            frames_saved += 1
-        except Exception:
-            pass
-
     # Quit on ESC or 'q' / 'Q'
     key = cv2.waitKey(1) & 0xFF
     if key == 27 or key == ord('q') or key == ord('Q'):
@@ -531,16 +533,6 @@ try:
     infer_thread.join(timeout=1.0)
 except Exception:
     pass
-
-# Save diagnostic logs if requested
-if DIAGNOSTIC_SAVE:
-    try:
-        outpath = os.path.join(DIAGNOSTIC_OUTPUT_DIR, "detections.json")
-        with open(outpath, "w") as f:
-            json.dump(diag_records, f, indent=2)
-        print(f"Saved {len(diag_records)} diagnostic records to {outpath}")
-    except Exception as e:
-        print("Failed to save diagnostic records:", e)
 
 cap.release()
 cv2.destroyAllWindows()
