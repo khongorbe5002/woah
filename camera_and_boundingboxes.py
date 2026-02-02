@@ -142,8 +142,11 @@ PROCESS_EVERY_N = 8
 SHOW_EVERY_N = 1
 # Show running FPS + average inference ms on the camera window
 SHOW_PERF_OVERLAY = True
-# Classes to draw on the camera window. Set to ['person'] to show only people, or [] to show all.
-CAMERA_SHOW_CLASSES = ['person']
+# Classes to draw on the camera window. Set to [] to hide all camera overlays (default: hide)
+CAMERA_SHOW_CLASSES = []  # leave empty to show no boxes on the camera window
+
+# Grid view options: when True, draw every detection on the grid; when False, only draw OBSTACLE_CLASSES
+GRID_SHOW_ALL = True
 
 # Obstacle alert settings (reduce print spam)
 OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert
@@ -439,14 +442,17 @@ while True:
             cv2.rectangle(frame, (text_x, text_y - text_h - baseline), (text_x + text_w, text_y + baseline), draw_color, -1)
             cv2.putText(frame, text, (text_x, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # If detection is an obstacle above threshold, print alert and draw on grid (with cooldown)
-        if label in OBSTACLE_CLASSES and conf > OBSTACLE_ALERT_CONF:
-            now = time.time()
-            last = last_alert_times.get(label, 0)
-            if now - last > ALERT_PRINT_COOLDOWN:
-                print(f"ALERT: Object detected, this is a:{label} with:{conf:.2f} conf")
-                print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
-                last_alert_times[label] = now
+        # Decide whether to draw on grid view: either show all detections or only OBSTACLE_CLASSES
+        show_on_grid = GRID_SHOW_ALL or (label in OBSTACLE_CLASSES and conf > OBSTACLE_ALERT_CONF)
+        if show_on_grid:
+            # Print alerts only for obstacle classes above threshold (throttled)
+            if label in OBSTACLE_CLASSES and conf > OBSTACLE_ALERT_CONF:
+                now = time.time()
+                last = last_alert_times.get(label, 0)
+                if now - last > ALERT_PRINT_COOLDOWN:
+                    print(f"ALERT: Object detected, this is a:{label} with:{conf:.2f} conf")
+                    print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
+                    last_alert_times[label] = now
 
             # Scale and draw on grid canvas
             grid_x1 = int((x1 / frame.shape[1]) * GRID_WIDTH)
