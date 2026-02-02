@@ -132,6 +132,14 @@ SHARPEN_ALPHA = 1.5  # weight for original image in unsharp mask
 SHARPEN_BETA = -0.5  # weight for blurred image in unsharp mask
 SHARPEN_SIGMA = 3  # Gaussian blur sigma
 
+# Performance tweaks
+# Lower the ONNX input size to speed up CPU inference (320 -> faster, 640 -> more accurate)
+INPUT_SIZE = 320
+# Process every Nth frame to reduce CPU load (set to 2 to halve model inferences)
+PROCESS_EVERY_N = 1
+# Show running FPS + average inference ms on the camera window
+SHOW_PERF_OVERLAY = True
+
 def create_grid_canvas():
     """Create a black canvas with a grid"""
     canvas = np.zeros((GRID_HEIGHT, GRID_WIDTH, 3), dtype=np.uint8)
@@ -289,10 +297,22 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
     return detections
 
 
+# Performance counters
+frame_counter = 0
+fps_last_time = time.time()
+frames_since_last = 0
+fps = 0.0
+avg_infer_ms = 0.0
+inference_count = 0
+last_detections = []
+
 while True:
     ret, frame = cap.read()
     if not ret:
         break
+
+    frame_counter += 1
+    frames_since_last += 1
 
     # Apply optional software sharpening if hardware focus is poor
     if SHARPEN:
@@ -305,8 +325,30 @@ while True:
     # Create grid canvas for this frame
     grid_canvas = create_grid_canvas()
 
-    # Run detection using the selected backend (ultralytics / onnx / mock)
-    detections = run_detection(frame)
+    # Decide whether to process this frame (skip some frames to save CPU)
+    process_this = (frame_counter % PROCESS_EVERY_N == 0)
+
+    infer_ms = 0.0
+    detections = []
+    if process_this:
+        t0 = time.time()
+        detections = run_detection(frame, input_size=INPUT_SIZE)
+        infer_ms = (time.time() - t0) * 1000.0
+        inference_count += 1
+        # running average for inference ms
+        avg_infer_ms = ((avg_infer_ms * (inference_count - 1)) + infer_ms) / inference_count if inference_count > 0 else infer_ms
+        last_detections = detections
+    else:
+        # reuse last detections for smoother display when skipping processing
+        detections = last_detections
+
+    # Update FPS once per second
+    if time.time() - fps_last_time >= 1.0:
+        elapsed = time.time() - fps_last_time
+        fps = frames_since_last / elapsed if elapsed > 0 else 0.0
+        print(f"FPS: {fps:.2f}, avg_infer_ms: {avg_infer_ms:.1f} ms, process_every_n: {PROCESS_EVERY_N}, input_size: {INPUT_SIZE}")
+        frames_since_last = 0
+        fps_last_time = time.time()
 
     for det in detections:
         x1, y1, x2, y2 = det["x1"], det["y1"], det["x2"], det["y2"]
@@ -356,7 +398,12 @@ while True:
             cv2.putText(grid_canvas, f"{label} ({conf:.2f})", (grid_x1, grid_y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_COLOR, 1)
             
-    cv2.imshow("Obstacle Detection Demo", frame)
+# Overlay performance info
+        if SHOW_PERF_OVERLAY:
+            perf_text = f"FPS:{fps:.1f} INF:{avg_infer_ms:.1f}ms"
+            cv2.putText(frame, perf_text, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+        cv2.imshow("Obstacle Detection Demo", frame)
     cv2.imshow("Filtered Detections - Grid View", grid_canvas)
 
     # Quit on ESC or 'q' / 'Q'
