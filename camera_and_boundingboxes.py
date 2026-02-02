@@ -56,7 +56,7 @@ if MODEL is None:
         print("Falling back to mock detection mode (no model).")
 
 # Video capture helper (adjust preferred index as needed)
-def open_video_capture(preferred_idx=1, max_idx=10):
+def open_video_capture(preferred_idx=1, max_idx=10, request_width=1280, request_height=720, use_mjpg=True):
     # Try preferred index first, then scan 0..max_idx for a usable device
     idxs = list(range(0, max_idx+1))
     if preferred_idx in idxs:
@@ -72,10 +72,31 @@ def open_video_capture(preferred_idx=1, max_idx=10):
             except Exception:
                 pass
             continue
+
+        # Try to set desired properties (may silently fail if unsupported)
+        try:
+            if use_mjpg:
+                fourcc = cv2.VideoWriter_fourcc(*'MJPG')
+                cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, request_width)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, request_height)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            # Try disabling autofocus if supported
+            try:
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
         # try to grab a frame to be sure it works
         ret, _ = cap.read()
         if ret:
-            print(f"Opened camera at index {idx}")
+            # log the actual capture properties
+            w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            print(f"Opened camera at index {idx} (reported size: {int(w)}x{int(h)} @ {fps:.1f} fps)")
             return cap
         else:
             try:
@@ -100,6 +121,16 @@ GRID_CELL_SIZE = 50  # Size of each grid square
 GRID_COLOR = (50, 50, 50)  # Dark gray for grid lines
 TEXT_COLOR = (0, 255, 0)  # Green text
 BOX_COLOR = (0, 255, 0)  # Green boxes
+
+# Camera & preprocessing tweaks
+REQUEST_CAMERA_WIDTH = 1280
+REQUEST_CAMERA_HEIGHT = 720
+USE_MJPG = True
+# Software sharpening: set to True to apply Unsharp Mask fallback in case hardware focus is bad
+SHARPEN = True
+SHARPEN_ALPHA = 1.5  # weight for original image in unsharp mask
+SHARPEN_BETA = -0.5  # weight for blurred image in unsharp mask
+SHARPEN_SIGMA = 3  # Gaussian blur sigma
 
 def create_grid_canvas():
     """Create a black canvas with a grid"""
@@ -152,50 +183,93 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
             print("Ultralytics model inference failed:", e)
 
     elif backend == "onnx" and model is not None:
-        # Use OpenCV DNN with ONNX export from Ultralytics (common export format)
+        # Use OpenCV DNN with ONNX export (supports classic YOLO format or separate 'logits'+'pred_boxes')
         blob = cv2.dnn.blobFromImage(frame, 1/255.0, (input_size, input_size), swapRB=True, crop=False)
         model.setInput(blob)
-        outputs = model.forward()
 
-        # Handle shapes: (1, N, 85) or (N,85)
-        if outputs.ndim == 3:
-            outs = outputs[0]
-        else:
-            outs = outputs
+        try:
+            outputs = model.forward()
+        except Exception:
+            outputs = None
 
         boxes_xywh = []
         scores = []
         class_ids = []
 
-        for row in outs:
-            # Expect: [x_center, y_center, w, h, obj_conf, class1, class2, ...]
-            if len(row) < 6:
-                continue
-            x_c, y_c, bw, bh = float(row[0]), float(row[1]), float(row[2]), float(row[3])
-            obj_conf = float(row[4])
-            class_probs = row[5:]
-            if len(class_probs) == 0:
-                continue
-            class_id = int(np.argmax(class_probs))
-            class_conf = float(class_probs[class_id])
-            conf = obj_conf * class_conf
-            if conf < conf_threshold:
-                continue
+        # Case A: model returns rows containing [x_c, y_c, w, h, obj_conf, class_probs...]
+        parsed = False
+        if outputs is not None:
+            if outputs.ndim == 3:
+                outs = outputs[0]
+            else:
+                outs = outputs
 
-            # Scale coordinates from input_size to original frame size
-            scale_x = w / input_size
-            scale_y = h / input_size
-            x_c *= scale_x
-            y_c *= scale_y
-            bw *= scale_x
-            bh *= scale_y
-            x1 = int(x_c - bw / 2)
-            y1 = int(y_c - bh / 2)
-            boxes_xywh.append([x1, y1, int(bw), int(bh)])
-            scores.append(float(conf))
-            class_ids.append(class_id)
+            # If rows have at least 6 entries, assume YOLO-like output
+            if outs.shape[1] >= 6:
+                for row in outs:
+                    if row.shape[0] < 6:
+                        continue
+                    x_c, y_c, bw, bh = float(row[0]), float(row[1]), float(row[2]), float(row[3])
+                    obj_conf = float(row[4])
+                    class_probs = row[5:]
+                    if class_probs.size == 0:
+                        continue
+                    class_id = int(np.argmax(class_probs))
+                    class_conf = float(class_probs[class_id])
+                    conf = obj_conf * class_conf
+                    if conf < conf_threshold:
+                        continue
 
-        # Apply NMS
+                    # Scale coordinates from input_size to original frame size
+                    scale_x = w / input_size
+                    scale_y = h / input_size
+                    x_c *= scale_x
+                    y_c *= scale_y
+                    bw *= scale_x
+                    bh *= scale_y
+                    x1 = int(x_c - bw / 2)
+                    y1 = int(y_c - bh / 2)
+                    boxes_xywh.append([x1, y1, int(bw), int(bh)])
+                    scores.append(float(conf))
+                    class_ids.append(class_id)
+
+                parsed = True
+
+        # Case B: model exposes separate 'logits' and 'pred_boxes' outputs (e.g., yolo26n)
+        if not parsed:
+            try:
+                logits = model.forward('logits')  # shape: (1, N, C)
+                pred_boxes = model.forward('pred_boxes')  # shape: (1, N, 4)
+                logits = np.array(logits)
+                pred_boxes = np.array(pred_boxes)
+                if logits.ndim == 3 and pred_boxes.ndim == 3:
+                    probs = np.exp(logits - np.max(logits, axis=2, keepdims=True))
+                    probs = probs / probs.sum(axis=2, keepdims=True)
+                    arr_logits = probs[0]
+                    arr_boxes = pred_boxes[0]
+                    for i in range(arr_boxes.shape[0]):
+                        class_id = int(np.argmax(arr_logits[i]))
+                        class_conf = float(arr_logits[i, class_id])
+                        conf = class_conf
+                        if conf < conf_threshold:
+                            continue
+
+                        x_c, y_c, bw, bh = map(float, arr_boxes[i][:4])
+                        # pred_boxes are normalized [0,1], scale to frame
+                        x_c_px = x_c * w
+                        y_c_px = y_c * h
+                        bw_px = bw * w
+                        bh_px = bh * h
+                        x1 = int(x_c_px - bw_px / 2)
+                        y1 = int(y_c_px - bh_px / 2)
+                        boxes_xywh.append([x1, y1, int(bw_px), int(bh_px)])
+                        scores.append(float(conf))
+                        class_ids.append(class_id)
+            except Exception:
+                # Could not parse specialized outputs; leave detections empty
+                pass
+
+        # Apply NMS if boxes found
         if len(boxes_xywh) > 0:
             idxs = cv2.dnn.NMSBoxes(boxes_xywh, scores, conf_threshold, nms_threshold)
             if len(idxs) > 0:
@@ -219,7 +293,15 @@ while True:
     ret, frame = cap.read()
     if not ret:
         break
-    
+
+    # Apply optional software sharpening if hardware focus is poor
+    if SHARPEN:
+        try:
+            blur = cv2.GaussianBlur(frame, (0, 0), SHARPEN_SIGMA)
+            frame = cv2.addWeighted(frame, SHARPEN_ALPHA, blur, SHARPEN_BETA, 0)
+        except Exception:
+            pass
+
     # Create grid canvas for this frame
     grid_canvas = create_grid_canvas()
 
@@ -231,18 +313,31 @@ while True:
         cls = det["cls"]
         conf = det["conf"]
 
-        # Draw box on main frame
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), BOX_COLOR, 2)
-
         # Get label name
         if BACKEND == "ultralytics" and MODEL is not None:
             label = MODEL_NAMES[cls] if MODEL_NAMES is not None and cls in MODEL_NAMES else str(cls)
         else:
             label = COCO_NAMES[cls] if 0 <= cls < len(COCO_NAMES) else str(cls)
 
+        # Decide box color (highlight obstacles)
+        draw_color = BOX_COLOR
         if label in OBSTACLE_CLASSES and conf > 0.4:
-            cv2.putText(frame, f"This is a:{label} with:{conf:.2f} conf", (int(x1), int(y1)-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, TEXT_COLOR, 2)
+            draw_color = (0, 0, 255)  # red for obstacles
+
+        # Draw box on main frame
+        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), draw_color, 2)
+
+        # Draw label and confidence on the camera window (always)
+        text = f"{label} {conf:.2f}"
+        (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        text_x = max(0, min(int(x1), frame.shape[1] - text_w - 1))
+        text_y = max(text_h + 2, int(y1) - 6)
+        # background rectangle for text for visibility
+        cv2.rectangle(frame, (text_x, text_y - text_h - baseline), (text_x + text_w, text_y + baseline), draw_color, -1)
+        cv2.putText(frame, text, (text_x, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+        # If detection is an obstacle above threshold, print alert and draw on grid
+        if label in OBSTACLE_CLASSES and conf > 0.4:
             print(f"ALERT: Object detected, this is a:{label} with:{conf:.2f} conf")
             print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
 
