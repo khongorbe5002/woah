@@ -137,14 +137,14 @@ SHARPEN_SIGMA = 3  # Gaussian blur sigma
 # ONNX input size: many ONNX models expect 640; attempting smaller sizes may fail for some exports.
 # Keep 640 for compatibility; you can set to 320 for faster (but possibly incompatible) runs.
 INPUT_SIZE = 640
-# Process every Nth frame to reduce CPU load (set to 3 to reduce inference frequency)
-PROCESS_EVERY_N = 3
+# Process every Nth frame to reduce CPU load (set higher to further reduce inferences)
+PROCESS_EVERY_N = 4
 # Show running FPS + average inference ms on the camera window
 SHOW_PERF_OVERLAY = True
 
 # Obstacle alert settings (reduce print spam)
 OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert (was 0.4)
-ALERT_PRINT_COOLDOWN = 2.0  # seconds between printing the same label alert
+ALERT_PRINT_COOLDOWN = 10.0  # seconds between printing the same label alert to reduce spam
 
 # Performance: allow OpenCV to use multiple CPU threads
 cv2.setNumThreads(max(1, os.cpu_count() - 1))
