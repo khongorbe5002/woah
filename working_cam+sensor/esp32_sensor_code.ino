@@ -19,13 +19,13 @@ int imageWidth = 0;
 
 void setup()
 {
-  Serial.begin(115200);
+  Serial.begin(921600);
   delay(1000);
   Serial.println("ESP32 VL53L5CX Sensor - Python Integration");
   Serial.println("Ready to send data...");
 
   Wire.begin(); // This resets to 100kHz I2C
-  Wire.setClock(400000); // Sensor has max I2C freq of 400kHz 
+  Wire.setClock(1000000); // Sensor has max I2C freq of 400kHz 
   
   Serial.println("Initializing sensor board. This can take up to 10s. Please wait.");
   if (myImager.begin() == false)
@@ -38,6 +38,8 @@ void setup()
   
   imageResolution = myImager.getResolution(); // Query sensor for current resolution - either 4x4 or 8x8
   imageWidth = sqrt(imageResolution); // Calculate printing width
+
+  myImager.setRangingFrequency(15);
 
   myImager.startRanging();
   Serial.println("Sensor initialized. Starting data transmission...");
@@ -64,7 +66,7 @@ void loop()
         Serial.println();
       }
       // Send delimiter to indicate end of data block
-      Serial.println("END_DATA");
+      Serial.println(" ");
     }
   }
 
