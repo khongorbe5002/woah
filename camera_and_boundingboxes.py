@@ -134,10 +134,10 @@ SHARPEN_BETA = -0.5  # weight for blurred image in unsharp mask
 SHARPEN_SIGMA = 3  # Gaussian blur sigma
 
 # Performance / filtering controls (cleaned defaults)
-# Input size for ONNX: many exports expect 640; keep 640 for compatibility.
-INPUT_SIZE = 640
+# Input size for ONNX: many exports expect 640; try 320 for faster CPU inference (falls back to 640 if unsupported)
+INPUT_SIZE = 320
 # Process every Nth frame to reduce CPU load (increase to further reduce inferences/prints)
-PROCESS_EVERY_N = 6
+PROCESS_EVERY_N = 8
 # How often to update the GUI windows (1 = every frame, increase to throttle GUI updates)
 SHOW_EVERY_N = 1
 # Show running FPS + average inference ms on the camera window
