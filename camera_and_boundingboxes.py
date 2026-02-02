@@ -133,19 +133,26 @@ SHARPEN_ALPHA = 1.5  # weight for original image in unsharp mask
 SHARPEN_BETA = -0.5  # weight for blurred image in unsharp mask
 SHARPEN_SIGMA = 3  # Gaussian blur sigma
 
-# Performance tweaks
-# ONNX input size: many ONNX models expect 640; attempting smaller sizes may fail for some exports.
-# Keep 640 for compatibility; you can set to 320 for faster (but possibly incompatible) runs.
+# Performance / filtering controls (cleaned defaults)
+# Input size for ONNX: many exports expect 640; keep 640 for compatibility.
 INPUT_SIZE = 640
-# Process every Nth frame to reduce CPU load (set higher to further reduce inferences)
-PROCESS_EVERY_N = 4
+# Process every Nth frame to reduce CPU load (increase to further reduce inferences/prints)
+PROCESS_EVERY_N = 6
+# How often to update the GUI windows (1 = every frame, increase to throttle GUI updates)
+SHOW_EVERY_N = 1
 # Show running FPS + average inference ms on the camera window
 SHOW_PERF_OVERLAY = True
 
 # Obstacle alert settings (reduce print spam)
-OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert (was 0.4)
-ALERT_PRINT_COOLDOWN = 10.0  # seconds between printing the same label alert to reduce spam
+OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert
+ALERT_PRINT_COOLDOWN = 3.0  # seconds between printing the same label alert
 
+# Performance: allow OpenCV to use multiple CPU threads
+cv2.setNumThreads(max(1, os.cpu_count() - 1))
+try:
+    cv2.ocl.setUseOpenCL(True)
+except Exception:
+    pass
 # Performance: allow OpenCV to use multiple CPU threads
 cv2.setNumThreads(max(1, os.cpu_count() - 1))
 try:
