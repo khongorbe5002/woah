@@ -5,7 +5,7 @@ import numpy as np
 from vl53l5cx_sensor import VL53L5CXSensor
 
 model = YOLO("yolov10n.pt")
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(1)
 
 # Initialize VL53L5CX sensor
 # For serial communication (ESP32), use: sensor = VL53L5CXSensor(port='COM3')  # Replace with your COM port
@@ -229,3 +229,4 @@ if sensor:
 
 #if label in OBSTACLE_CLASSES and conf > 0.5:
     
+
