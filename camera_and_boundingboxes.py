@@ -133,12 +133,17 @@ SHARPEN_BETA = -0.5  # weight for blurred image in unsharp mask
 SHARPEN_SIGMA = 3  # Gaussian blur sigma
 
 # Performance tweaks
-# Lower the ONNX input size to speed up CPU inference (320 -> faster, 640 -> more accurate)
-INPUT_SIZE = 320
+# ONNX input size: many ONNX models expect 640; attempting smaller sizes may fail for some exports.
+# Keep 640 for compatibility; you can set to 320 for faster (but possibly incompatible) runs.
+INPUT_SIZE = 640
 # Process every Nth frame to reduce CPU load (set to 2 to halve model inferences)
-PROCESS_EVERY_N = 1
+PROCESS_EVERY_N = 2
 # Show running FPS + average inference ms on the camera window
 SHOW_PERF_OVERLAY = True
+
+# Obstacle alert settings (reduce print spam)
+OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert (was 0.4)
+ALERT_PRINT_COOLDOWN = 2.0  # seconds between printing the same label alert
 
 def create_grid_canvas():
     """Create a black canvas with a grid"""
@@ -192,13 +197,24 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
 
     elif backend == "onnx" and model is not None:
         # Use OpenCV DNN with ONNX export (supports classic YOLO format or separate 'logits'+'pred_boxes')
-        blob = cv2.dnn.blobFromImage(frame, 1/255.0, (input_size, input_size), swapRB=True, crop=False)
-        model.setInput(blob)
-
+        used_input_size = input_size
         try:
+            blob = cv2.dnn.blobFromImage(frame, 1/255.0, (input_size, input_size), swapRB=True, crop=False)
+            model.setInput(blob)
             outputs = model.forward()
         except Exception:
+            # Some ONNX exports rely on specific input sizes. Retry with 640 if the requested smaller size fails.
             outputs = None
+            if input_size != 640:
+                try:
+                    used_input_size = 640
+                    blob = cv2.dnn.blobFromImage(frame, 1/255.0, (used_input_size, used_input_size), swapRB=True, crop=False)
+                    model.setInput(blob)
+                    outputs = model.forward()
+                    # warn once
+                    print("Warning: model failed with input_size", input_size, "; falling back to 640 for this frame")
+                except Exception:
+                    outputs = None
 
         boxes_xywh = []
         scores = []
@@ -228,9 +244,9 @@ def run_detection(frame, backend=BACKEND, model=MODEL, conf_threshold=0.25, nms_
                     if conf < conf_threshold:
                         continue
 
-                    # Scale coordinates from input_size to original frame size
-                    scale_x = w / input_size
-                    scale_y = h / input_size
+                    # Scale coordinates from used_input_size to original frame size
+                    scale_x = w / used_input_size
+                    scale_y = h / used_input_size
                     x_c *= scale_x
                     y_c *= scale_y
                     bw *= scale_x
@@ -305,6 +321,7 @@ fps = 0.0
 avg_infer_ms = 0.0
 inference_count = 0
 last_detections = []
+last_alert_times = {}
 
 while True:
     ret, frame = cap.read()
@@ -363,7 +380,7 @@ while True:
 
         # Decide box color (highlight obstacles)
         draw_color = BOX_COLOR
-        if label in OBSTACLE_CLASSES and conf > 0.4:
+        if label in OBSTACLE_CLASSES and conf > OBSTACLE_ALERT_CONF:
             draw_color = (0, 0, 255)  # red for obstacles
 
         # Draw box on main frame
@@ -378,10 +395,14 @@ while True:
         cv2.rectangle(frame, (text_x, text_y - text_h - baseline), (text_x + text_w, text_y + baseline), draw_color, -1)
         cv2.putText(frame, text, (text_x, text_y - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # If detection is an obstacle above threshold, print alert and draw on grid
-        if label in OBSTACLE_CLASSES and conf > 0.4:
-            print(f"ALERT: Object detected, this is a:{label} with:{conf:.2f} conf")
-            print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
+        # If detection is an obstacle above threshold, print alert and draw on grid (with cooldown)
+        if label in OBSTACLE_CLASSES and conf > OBSTACLE_ALERT_CONF:
+            now = time.time()
+            last = last_alert_times.get(label, 0)
+            if now - last > ALERT_PRINT_COOLDOWN:
+                print(f"ALERT: Object detected, this is a:{label} with:{conf:.2f} conf")
+                print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
+                last_alert_times[label] = now
 
             # Scale and draw on grid canvas
             grid_x1 = int((x1 / frame.shape[1]) * GRID_WIDTH)
