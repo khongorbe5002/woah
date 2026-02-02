@@ -56,7 +56,8 @@ if MODEL is None:
         print("Falling back to mock detection mode (no model).")
 
 # Video capture helper (adjust preferred index as needed)
-def open_video_capture(preferred_idx=1, max_idx=10, request_width=1280, request_height=720, use_mjpg=True):
+# Use a smaller default capture resolution to reduce decoder/CPU overhead when necessary
+def open_video_capture(preferred_idx=1, max_idx=10, request_width=640, request_height=480, use_mjpg=True):
     # Try preferred index first, then scan 0..max_idx for a usable device
     idxs = list(range(0, max_idx+1))
     if preferred_idx in idxs:
@@ -123,8 +124,8 @@ TEXT_COLOR = (0, 255, 0)  # Green text
 BOX_COLOR = (0, 255, 0)  # Green boxes
 
 # Camera & preprocessing tweaks
-REQUEST_CAMERA_WIDTH = 1280
-REQUEST_CAMERA_HEIGHT = 720
+REQUEST_CAMERA_WIDTH = 640
+REQUEST_CAMERA_HEIGHT = 480
 USE_MJPG = True
 # Software sharpening: set to True to apply Unsharp Mask fallback in case hardware focus is bad
 SHARPEN = True
@@ -136,14 +137,21 @@ SHARPEN_SIGMA = 3  # Gaussian blur sigma
 # ONNX input size: many ONNX models expect 640; attempting smaller sizes may fail for some exports.
 # Keep 640 for compatibility; you can set to 320 for faster (but possibly incompatible) runs.
 INPUT_SIZE = 640
-# Process every Nth frame to reduce CPU load (set to 2 to halve model inferences)
-PROCESS_EVERY_N = 2
+# Process every Nth frame to reduce CPU load (set to 3 to reduce inference frequency)
+PROCESS_EVERY_N = 3
 # Show running FPS + average inference ms on the camera window
 SHOW_PERF_OVERLAY = True
 
 # Obstacle alert settings (reduce print spam)
 OBSTACLE_ALERT_CONF = 0.5  # minimum confidence to consider printing an alert (was 0.4)
 ALERT_PRINT_COOLDOWN = 2.0  # seconds between printing the same label alert
+
+# Performance: allow OpenCV to use multiple CPU threads
+cv2.setNumThreads(max(1, os.cpu_count() - 1))
+try:
+    cv2.ocl.setUseOpenCL(True)
+except Exception:
+    pass
 
 def create_grid_canvas():
     """Create a black canvas with a grid"""
