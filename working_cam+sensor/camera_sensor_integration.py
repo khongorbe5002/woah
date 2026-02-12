@@ -3,9 +3,12 @@ import cv2
 import time
 import numpy as np
 from vl53l5cx_sensor import VL53L5CXSensor
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment
+from datetime import datetime
 
 model = YOLO("yolov10n.pt")
-cap = cv2.VideoCapture(1)
+cap = cv2.VideoCapture(0)
 
 # Initialize VL53L5CX sensor
 # For serial communication (ESP32), use: sensor = VL53L5CXSensor(port='COM3')  # Replace with your COM port
@@ -138,16 +141,102 @@ def create_sensor_grid(sensor_data):
     
     return canvas
 
+def map_camera_to_sensor_grid(x1, y1, x2, y2, frame_height, frame_width):
+    """
+    Map camera frame bounding box coordinates to sensor grid coordinates (8x8)
+    Assumes sensor is centered and aligned with camera view
+    Returns list of (row, col) tuples for sensor cells that overlap with bbox
+    """
+    # Normalize bbox to 0-1 range
+    norm_x1 = x1 / frame_width
+    norm_y1 = y1 / frame_height
+    norm_x2 = x2 / frame_width
+    norm_y2 = y2 / frame_height
+    
+    # Map to 8x8 sensor grid (0-7 for rows and cols)
+    sensor_col1 = int(norm_x1 * 8)
+    sensor_row1 = int(norm_y1 * 8)
+    sensor_col2 = int(norm_x2 * 8)
+    sensor_row2 = int(norm_y2 * 8)
+    
+    # Clamp to valid range
+    sensor_col1 = max(0, min(sensor_col1, 7))
+    sensor_row1 = max(0, min(sensor_row1, 7))
+    sensor_col2 = max(0, min(sensor_col2, 7))
+    sensor_row2 = max(0, min(sensor_row2, 7))
+    
+    # Generate list of sensor cells covering the bbox
+    sensor_cells = []
+    for row in range(sensor_row1, sensor_row2 + 1):
+        for col in range(sensor_col1, sensor_col2 + 1):
+            sensor_cells.append((row, col))
+    
+    return sensor_cells
+
+def check_sensor_close_in_region(sensor_data, sensor_cells, distance_threshold=400):
+    """
+    Check if sensor detected an object within distance_threshold (mm) in the specified region
+    Returns tuple: (detected_close: bool, min_distance: int or None)
+    """
+    if sensor_data is None or len(sensor_cells) == 0:
+        return False, None
+    
+    distances = []
+    for row, col in sensor_cells:
+        distance = sensor_data[row, col]
+        # Valid distance reading
+        if distance > 0:
+            distances.append(distance)
+    
+    if len(distances) == 0:
+        return False, None
+    
+    min_dist = min(distances)
+    detected_close = min_dist < distance_threshold
+    return detected_close, min_dist
+
 # Store last sensor data to retain visualization
 last_sensor_data = None
+
+# Excel logging setup
+excel_filename = f"detection_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+wb = Workbook()
+ws = wb.active
+ws.title = "Detections"
+
+# Create header row with styling
+headers = ["Timestamp", "Total Instances", "Object Classes", "Object Locations", "Min Sensor Distance (mm)", "Close (<400mm)"]
+ws.append(headers)
+
+# Style header row
+header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+header_font = Font(bold=True, color="FFFFFF")
+
+for cell in ws[1]:
+    cell.fill = header_fill
+    cell.font = header_font
+    cell.alignment = Alignment(horizontal="center", vertical="center")
+
+# Column widths
+ws.column_dimensions['A'].width = 25
+ws.column_dimensions['B'].width = 18
+ws.column_dimensions['C'].width = 40
+ws.column_dimensions['D'].width = 60
+ws.column_dimensions['E'].width = 20
+ws.column_dimensions['F'].width = 15
+
+# Tracking for 0.25 second interval data logging
+last_log_time = time.time()
+LOG_INTERVAL = 0.25  # seconds
+current_frame_detections = []
 
 while True:
     ret, frame = cap.read()
     if not ret:
         break
     
-    # Flip camera horizontally
-    frame = cv2.flip(frame, 1)
+    # Remove horizontal flip - camera orientation correction
+    # frame = cv2.flip(frame, 1)  # Disabled - camera no longer needs flip
     
     # Create grid canvas for this frame
     grid_canvas = create_grid_canvas()
@@ -163,6 +252,9 @@ while True:
     
     results = model(frame, stream=True)
     
+    # Reset detection list for this frame
+    current_frame_detections = []
+    
     for r in results:
         boxes = r.boxes
         for b in boxes:
@@ -177,10 +269,28 @@ while True:
             label = model.names[cls]
 
             if label in OBSTACLE_CLASSES and conf > 0.4:
+                # Store detection data for logging
+                center_x = int((x1 + x2) / 2)
+                center_y = int((y1 + y2) / 2)
+                location_str = f"({center_x}, {center_y})"
+                
+                # Check if sensor detected something close in this object's region
+                sensor_cells = map_camera_to_sensor_grid(x1, y1, x2, y2, frame.shape[0], frame.shape[1])
+                sensor_close, sensor_distance = check_sensor_close_in_region(sensor_data, sensor_cells, distance_threshold=400)
+                
+                current_frame_detections.append({
+                    'label': label,
+                    'confidence': conf,
+                    'location': location_str,
+                    'sensor_close': sensor_close,
+                    'sensor_distance': sensor_distance,
+                    'sensor_cells': sensor_cells
+                })
+                
                 cv2.putText(frame, f"This is a:{label} with:{conf:.1f} conf", (int(x1), int(y1)-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 2)
                 print(f"ALERT: Object detected, this is a:{label} with:{conf:.1f} conf")
-                print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({int((x1+x2)/2)}, {int((y1+y2)/2)})")
+                print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({center_x}, {center_y})")
                 
                 # Scale and draw on grid canvas
                 # Normalize coordinates to grid size
@@ -215,6 +325,38 @@ while True:
     cv2.imshow("Filtered Detections - Grid View", grid_canvas)
     cv2.imshow("TOF Sensor Grid", sensor_grid)
     
+    # Log data to Excel every 0.25 seconds
+    current_time = time.time()
+    if current_time - last_log_time >= LOG_INTERVAL:
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
+        total_instances = len(current_frame_detections)
+        
+        # Compile object classes and locations
+        if total_instances > 0:
+            object_classes = ", ".join([d['label'] for d in current_frame_detections])
+            object_locations = " | ".join([d['location'] for d in current_frame_detections])
+            
+            # Get minimum sensor distance among detected objects
+            sensor_distances = [d['sensor_distance'] for d in current_frame_detections if d['sensor_distance'] is not None]
+            if sensor_distances:
+                min_sensor_distance = min(sensor_distances)
+                # Check if any object is within 400mm
+                close_detected = "Y" if min_sensor_distance < 400 else ""
+            else:
+                min_sensor_distance = "N/A"
+                close_detected = ""
+        else:
+            object_classes = "None"
+            object_locations = "No detections"
+            min_sensor_distance = "N/A"
+            close_detected = ""
+        
+        # Add row to Excel
+        ws.append([timestamp, total_instances, object_classes, object_locations, min_sensor_distance, close_detected])
+        wb.save(excel_filename)
+        
+        last_log_time = current_time
+    
     if cv2.waitKey(1) == 27:
         break
 
@@ -224,9 +366,12 @@ cv2.destroyAllWindows()
 if sensor:
     sensor.close()
 
+# Save and close workbook
+wb.save(excel_filename)
+print(f"\nDetection log saved to: {excel_filename}")
+
 
 
 
 #if label in OBSTACLE_CLASSES and conf > 0.5:
     
-
