@@ -2,24 +2,121 @@ from ultralytics import YOLO
 import cv2
 import time
 import numpy as np
-from vl53l5cx_sensor import VL53L5CXSensor
+import subprocess
+from working_cam_sensor.vl53l5cx_sensor import VL53L5CXSensor
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from datetime import datetime
 
-model = YOLO("yolov10n.pt")
+
+def _sanitize_speech_text(text: str) -> str:
+    """Sanitize text for PowerShell speech synthesis (escape single quotes)."""
+    return text.replace("'", "''")
+
+
+# Voice settings (Windows TTS)
+VOICE_NAME = "Microsoft Zira Desktop"  # female voice on Windows
+TTS_PROCESS = None
+
+
+def speak_text(text: str) -> None:
+    """Speak text using Windows PowerShell TTS (System.Speech).
+
+    This function ensures only one speech process is active at a time.
+    """
+    global TTS_PROCESS
+
+    # Do not start a new speech process if one is still running.
+    if TTS_PROCESS is not None and TTS_PROCESS.poll() is None:
+        return
+
+    try:
+        safe_text = _sanitize_speech_text(text)
+        cmd = [
+            "powershell",
+            "-Command",
+            (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.SelectVoice('{VOICE_NAME}'); "
+                f"$s.Speak('{safe_text}');"
+            )
+        ]
+        # Fire and forget -- do not block main loop
+        TTS_PROCESS = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception as e:
+        # Fallback: print error once, do not keep spamming
+        if not hasattr(speak_text, "_warned"):
+            print(f"ALERT: TTS failed ({e})")
+            speak_text._warned = True
+
+
+def get_direction_descriptor(cx: int, cy: int, frame_w: int, frame_h: int) -> str:
+    """Return a human readable direction (e.g., upper right, center) for a point in the frame."""
+    # Divide the frame into a 3x3 grid
+    third_w = frame_w / 3.0
+    third_h = frame_h / 3.0
+
+    if cx < third_w:
+        horiz = "left"
+    elif cx < 2 * third_w:
+        horiz = "center"
+    else:
+        horiz = "right"
+
+    if cy < third_h:
+        vert = "upper"
+    elif cy < 2 * third_h:
+        vert = "center"
+    else:
+        vert = "bottom"
+
+    if vert == "center" and horiz == "center":
+        return "center"
+    if vert == "center":
+        return horiz
+    if horiz == "center":
+        return vert
+    return f"{vert} {horiz}"
+
+
+def _euclidean_dist(p0, p1):
+    return ((p0[0] - p1[0]) ** 2 + (p0[1] - p1[1]) ** 2) ** 0.5
+
+
+def _find_tracked_object(label: str, center: tuple[int, int]) -> dict | None:
+    """Find a previously tracked object with the same label and nearby location."""
+    for obj in tracked_objects:
+        if obj["label"] != label:
+            continue
+        if _euclidean_dist(center, obj["center"]) < TRACKED_OBJECT_MOVE_THRESHOLD_PX:
+            return obj
+    return None
+
+
+def _cleanup_tracked_objects(now: float) -> None:
+    """Remove tracked objects that have not been seen recently."""
+    global tracked_objects
+    tracked_objects = [obj for obj in tracked_objects if (now - obj.get("last_seen", 0)) < TRACKED_OBJECT_MAX_AGE]
+
+
+# Create YOLO model (suppress verbose output to avoid flooding the terminal)
+model = YOLO("yolov10n.pt", verbose=False)
+
 cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("ALERT: camera could not be opened")
+    cap = None
 
 # Initialize VL53L5CX sensor
 # For serial communication (ESP32), use: sensor = VL53L5CXSensor(port='COM3')  # Replace with your COM port
 # For direct I2C, use: sensor = VL53L5CXSensor(use_serial=False)
-# Auto-detect ESP32 on serial port:
+# Auto-detect ESP32 on serial port (quiet mode):
 try:
-    sensor = VL53L5CXSensor(port=None, use_serial=True)  # Auto-detect ESP32
-    print("VL53L5CX sensor initialized")
+    sensor = VL53L5CXSensor(port=None, use_serial=True, verbose=False)
 except Exception as e:
-    print(f"Warning: Could not initialize sensor: {e}")
-    print("Continuing without sensor data...")
+    # permission or port errors are expected if device busy; warn once
+    print(f"ALERT: Could not initialize sensor: {e}")
     sensor = None
 
 OBSTACLE_CLASSES = [
@@ -27,6 +124,19 @@ OBSTACLE_CLASSES = [
     "fire hydrant", "stop sign", "stairs","phone","scooter","motorcycle",
     "tree","bushes","cup","cups","bowl"  # stairs requires custom model later
 ]
+
+# Distance threshold for considering something "close" (in mm)
+CLOSE_THRESHOLD_MM = 300
+
+# How often we remind the user about the same object
+ALERT_REMINDER_SECONDS = 5.0
+
+# If an object stays in roughly the same place, we consider it "the same object".
+TRACKED_OBJECT_MOVE_THRESHOLD_PX = 80  # pixels for center movement
+TRACKED_OBJECT_MAX_AGE = 10.0  # seconds before forgetting a tracked object
+
+# Tracking objects over time so we can re-alert only after a reminder interval
+tracked_objects = []  # each entry: {label, center, last_alert, last_seen}
 
 # Grid visualization parameters
 GRID_WIDTH = 800
@@ -40,6 +150,12 @@ BOX_COLOR = (0, 255, 0)  # Green boxes
 SENSOR_GRID_SIZE = 600  # Size of sensor grid window (square)
 SENSOR_CELL_SIZE = SENSOR_GRID_SIZE // 8  # Each cell is 1/8 of the grid
 SENSOR_MAX_DISTANCE = 3300  # Maximum distance in mm for color scaling (raw sensor max)
+
+# Sensor smoothing to reduce noise / spikes
+SENSOR_SMOOTHING_FRAMES = 3
+sensor_history = []  # list of most recent sensor frames (numpy arrays)
+filtered_sensor_data = None
+sensor_warning_printed = False
 
 def create_grid_canvas():
     """Create a black canvas with a grid"""
@@ -204,8 +320,20 @@ wb = Workbook()
 ws = wb.active
 ws.title = "Detections"
 
-# Create header row with styling
-headers = ["Timestamp", "Total Instances", "Object Classes", "Object Locations", "Min Sensor Distance (mm)", "Close (<400mm)"]
+# Create header row with styling (one row per detection)
+headers = [
+    "Timestamp",
+    "Object Class",
+    "Confidence",
+    "Location (px)",
+    "Sensor Distance (mm)",
+    "Sensor Cells",
+    "Closest Cell",
+    "Is Close",
+    "Frame Avg Confidence",
+    "Frame Close Count",
+    "Frame Close Objects"
+]
 ws.append(headers)
 
 # Style header row
@@ -218,25 +346,39 @@ for cell in ws[1]:
     cell.alignment = Alignment(horizontal="center", vertical="center")
 
 # Column widths
-ws.column_dimensions['A'].width = 25
-ws.column_dimensions['B'].width = 18
-ws.column_dimensions['C'].width = 40
-ws.column_dimensions['D'].width = 60
-ws.column_dimensions['E'].width = 20
-ws.column_dimensions['F'].width = 15
+ws.column_dimensions['A'].width = 25  # Timestamp
+ws.column_dimensions['B'].width = 18  # Object class
+ws.column_dimensions['C'].width = 12  # Confidence
+ws.column_dimensions['D'].width = 18  # Location
+ws.column_dimensions['E'].width = 20  # Sensor distance
+ws.column_dimensions['F'].width = 30  # Sensor cells
+ws.column_dimensions['G'].width = 15  # Closest cell
+ws.column_dimensions['H'].width = 10  # Is close
+ws.column_dimensions['I'].width = 18  # Frame average conf
+ws.column_dimensions['J'].width = 15  # Frame close count
+ws.column_dimensions['K'].width = 40  # Frame close objects
 
 # Tracking for 0.25 second interval data logging
 last_log_time = time.time()
 LOG_INTERVAL = 0.25  # seconds
 current_frame_detections = []
 
+# optional auto-termination to prevent unresponsive pop-ups during testing
+MAX_RUNTIME = 30  # seconds; set to None to run indefinitely
+start_time = time.time()
+
 while True:
+    if cap is None:
+        # no camera available, stop loop
+        break
     ret, frame = cap.read()
     if not ret:
+        print("ALERT: camera frame grab failed, exiting")
         break
     
-    # Remove horizontal flip - camera orientation correction
-    # frame = cv2.flip(frame, 1)  # Disabled - camera no longer needs flip
+    # Camera should be used with native orientation to match sensor mapping
+    # (flipping caused sensor/camera mismatch)
+    # frame = cv2.flip(frame, 1)
     
     # Create grid canvas for this frame
     grid_canvas = create_grid_canvas()
@@ -245,13 +387,39 @@ while True:
     if sensor and sensor.is_data_ready():
         new_data = sensor.get_ranging_data()
         if new_data is not None:
-            last_sensor_data = new_data
+            # Keep a short history and use median smoothing to reduce spikes
+            new_arr = np.array(new_data, dtype=np.int32)
+            
+            # Replace zeros (invalid/no-object) with a far value so they don't get stuck in history
+            # This allows the system to detect when objects leave (sensor goes to zeros/far)
+            DEFAULT_FAR_VALUE = 5000  # mm - beyond max sensor range, signals "nothing detected"
+            new_arr = np.where(new_arr == 0, DEFAULT_FAR_VALUE, new_arr)
+            
+            sensor_history.append(new_arr)
+            if len(sensor_history) > SENSOR_SMOOTHING_FRAMES:
+                sensor_history.pop(0)
+
+            stacked = np.stack(sensor_history, axis=0)
+            filtered = np.median(stacked, axis=0).astype(np.int32)
+            filtered_sensor_data = filtered
+
+            # One-time warning if sensor returns mostly invalid values (zeros before replacement)
+            if not sensor_warning_printed:
+                invalid = np.count_nonzero(np.array(new_data) == 0)
+                if invalid / np.array(new_data).size > 0.5:
+                    print(f"ALERT: sensor returning {invalid}/{np.array(new_data).size} invalid readings (0). Check wiring/position.")
+                    sensor_warning_printed = True
+
+    # Use filtered sensor data for visualization and detection
+    sensor_data = filtered_sensor_data
     
-    # Use last sensor data for visualization (retains previous data if no new data)
-    sensor_data = last_sensor_data
+    results = model(frame, stream=True, verbose=False)
     
-    results = model(frame, stream=True)
-    
+    # Track whether we've already spoken an alert this frame (one audio at a time)
+    audio_alert_sent = False
+    frame_now = time.time()
+    _cleanup_tracked_objects(frame_now)
+
     # Reset detection list for this frame
     current_frame_detections = []
     
@@ -276,7 +444,18 @@ while True:
                 
                 # Check if sensor detected something close in this object's region
                 sensor_cells = map_camera_to_sensor_grid(x1, y1, x2, y2, frame.shape[0], frame.shape[1])
-                sensor_close, sensor_distance = check_sensor_close_in_region(sensor_data, sensor_cells, distance_threshold=400)
+                sensor_close, sensor_distance = check_sensor_close_in_region(
+                    sensor_data, sensor_cells, distance_threshold=CLOSE_THRESHOLD_MM)
+                
+                # determine closest cell inside this region (if sensor data available)
+                closest_cell = None
+                if sensor_data is not None and sensor_cells:
+                    min_dist = float('inf')
+                    for row, col in sensor_cells:
+                        d = sensor_data[row, col]
+                        if 0 < d < min_dist:
+                            min_dist = d
+                            closest_cell = (row, col)
                 
                 current_frame_detections.append({
                     'label': label,
@@ -284,13 +463,44 @@ while True:
                     'location': location_str,
                     'sensor_close': sensor_close,
                     'sensor_distance': sensor_distance,
-                    'sensor_cells': sensor_cells
+                    'sensor_cells': sensor_cells,
+                    'closest_cell': closest_cell
                 })
                 
-                cv2.putText(frame, f"This is a:{label} with:{conf:.1f} conf", (int(x1), int(y1)-10),
+                cv2.putText(frame, f"{label} ({conf:.1f})", (int(x1), int(y1)-10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0,255,0), 2)
-                print(f"ALERT: Object detected, this is a:{label} with:{conf:.1f} conf")
-                print(f"  Location: Top-left ({int(x1)}, {int(y1)}) | Bottom-right ({int(x2)}, {int(y2)}) | Center ({center_x}, {center_y})")
+                # Only alert when a close object is detected, and avoid repeating alerts too often
+                if sensor_close:
+                    obj = _find_tracked_object(label, (center_x, center_y))
+                    should_alert = False
+
+                    if obj is None:
+                        obj = {
+                            "label": label,
+                            "center": (center_x, center_y),
+                            "last_alert": frame_now,
+                            "last_seen": frame_now,
+                        }
+                        tracked_objects.append(obj)
+                        should_alert = True
+                    else:
+                        # Update location and last seen time
+                        moved = _euclidean_dist((center_x, center_y), obj["center"])
+                        obj["center"] = (center_x, center_y)
+                        obj["last_seen"] = frame_now
+
+                        # Remind only if object hasn't moved much and cooldown passed
+                        if (frame_now - obj.get("last_alert", 0)) > ALERT_REMINDER_SECONDS and moved < TRACKED_OBJECT_MOVE_THRESHOLD_PX:
+                            should_alert = True
+                            obj["last_alert"] = frame_now
+
+                    if should_alert:
+                        direction = get_direction_descriptor(center_x, center_y, frame.shape[1], frame.shape[0])
+                        alert_msg = f"ALERT: close object detected - {label} at {sensor_distance}mm, cell {closest_cell}"
+                        print(alert_msg)
+                        if not audio_alert_sent:
+                            speak_text(f"Alert: close object detected in {direction} - {label}")
+                            audio_alert_sent = True
                 
                 # Scale and draw on grid canvas
                 # Normalize coordinates to grid size
@@ -331,32 +541,39 @@ while True:
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]
         total_instances = len(current_frame_detections)
         
-        # Compile object classes and locations
+        # frame-level metrics
         if total_instances > 0:
-            object_classes = ", ".join([d['label'] for d in current_frame_detections])
-            object_locations = " | ".join([d['location'] for d in current_frame_detections])
-            
-            # Get minimum sensor distance among detected objects
-            sensor_distances = [d['sensor_distance'] for d in current_frame_detections if d['sensor_distance'] is not None]
-            if sensor_distances:
-                min_sensor_distance = min(sensor_distances)
-                # Check if any object is within 400mm
-                close_detected = "Y" if min_sensor_distance < 400 else ""
-            else:
-                min_sensor_distance = "N/A"
-                close_detected = ""
+            frame_avg_conf = sum(d['confidence'] for d in current_frame_detections) / total_instances
+            close_objs = [d['label'] for d in current_frame_detections if d['sensor_close']]
+            frame_close_count = len(close_objs)
+            frame_close_list = ", ".join(close_objs)
         else:
-            object_classes = "None"
-            object_locations = "No detections"
-            min_sensor_distance = "N/A"
-            close_detected = ""
+            frame_avg_conf = 0
+            frame_close_count = 0
+            frame_close_list = ""
         
-        # Add row to Excel
-        ws.append([timestamp, total_instances, object_classes, object_locations, min_sensor_distance, close_detected])
+        # add one row per detection
+        for d in current_frame_detections:
+            cells_str = ", ".join([f"({r},{c})" for r, c in d['sensor_cells']]) if d['sensor_cells'] else ""
+            is_close_str = "Y" if d['sensor_close'] else ""
+            closest_cell_str = str(d['closest_cell']) if d.get('closest_cell') is not None else ""
+            ws.append([
+                timestamp,
+                d['label'],
+                f"{d['confidence']:.2f}",
+                d['location'],
+                d['sensor_distance'] if d['sensor_distance'] is not None else "",
+                cells_str,
+                closest_cell_str,
+                is_close_str,
+                f"{frame_avg_conf:.2f}",
+                frame_close_count,
+                frame_close_list
+            ])
         wb.save(excel_filename)
-        
         last_log_time = current_time
     
+    # window event handling and exit conditions
     if cv2.waitKey(1) == 27:
         break
 
@@ -368,7 +585,6 @@ if sensor:
 
 # Save and close workbook
 wb.save(excel_filename)
-print(f"\nDetection log saved to: {excel_filename}")
 
 
 
