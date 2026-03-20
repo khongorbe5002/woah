@@ -1,6 +1,6 @@
 import time
 import numpy as np
-from vl53l5cx import VL53L5CXSensor
+from vl53l5cx_sensor import VL53L5CXSensor
 
 sensor = VL53L5CXSensor()
 
