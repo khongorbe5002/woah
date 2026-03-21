@@ -1,4 +1,7 @@
-17:27
+pip uninstall opencv-python -y
+pip install opencv-python-headless
+
+
 
 qt.qpa.plugin: Could not find the Qt platform plugin "wayland" in "/home/ashleywong/yolo_project/venv/lib/python3.13/site-packages/cv2/qt/plugins"
 QFontDatabase: Cannot find font directory /home/ashleywong/yolo_project/venv/lib/python3.13/site-packages/cv2/qt/fonts.
