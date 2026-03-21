@@ -38,7 +38,7 @@ class VL53L5CXSensor:
             raise Exception("pip install sparkfun-qwiic-vl53l5cx")
 
     def get_ranging_data(self):
-        if not self.i2c_sensor.is_data_ready():
+        if not self.i2c_sensor.check_data_ready():
             return None
 
         try:
