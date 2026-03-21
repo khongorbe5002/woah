@@ -4,9 +4,7 @@ import time
 import threading
 import numpy as np
 import subprocess
-
-from working_cam_sensor.vl53l5cx_sensor import VL53L5CXSensor
-
+from working_cam_sensor import VL53L5CXSensor
 
 def speak_text(text):
     try:
