@@ -1,6 +1,12 @@
-pip uninstall opencv-python -y
-pip install opencv-python-headless
-
+sudo apt update
+sudo apt install -y \
+    libqt5gui5 \
+    libqt5widgets5 \
+    libqt5core5a \
+    fonts-dejavu-core \
+    fontconfig
+fc-cache -fv
+python3 your_script.py
 
 
 qt.qpa.plugin: Could not find the Qt platform plugin "wayland" in "/home/ashleywong/yolo_project/venv/lib/python3.13/site-packages/cv2/qt/plugins"
