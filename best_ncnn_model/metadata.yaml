@@ -1,0 +1,28 @@
+description: Ultralytics YOLO11n model trained on /content/Training/Categorizing-Hazards--2/data.yaml
+author: Ultralytics
+date: '2026-03-25T14:21:42.598320'
+version: 8.4.21
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: detect
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: Bike
+  1: Car
+  2: Chair
+  3: Emergency Blue Phone
+  4: Exit sign
+  5: Person
+  6: Pole
+  7: Stairs
+  8: Tree
+  9: Washroom
+args:
+  batch: 1
+  half: false
+channels: 3
+end2end: false
