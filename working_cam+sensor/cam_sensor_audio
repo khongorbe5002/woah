@@ -22,7 +22,7 @@ def headphone_listener():
     print("Headphone controls active")
 
     for event in dev.read_loop():
-        if event.type == ecodes.EV_KEY:
+        if event.type == ecodes.EV_KEY:z
             key_event = categorize(event)
 
             if key_event.keystate == 1:
@@ -197,19 +197,7 @@ if __name__=="__main__":
                     gx=max(0,min(7,gx))
                     gy=max(0,min(7,gy))
 
-                    # Sample a 3x3 region around the mapped point
-                    y1 = max(0, gy - 1)
-                    y2 = min(8, gy + 2)
-                    x1 = max(0, gx - 1)
-                    x2 = min(8, gx + 2)
-                    
-                    region = sensor_data[y1:y2, x1:x2]
-                    valid = region[region > 0]
-                    
-                    if len(valid) > 0:
-                        dist = np.min(valid)   # closest point
-                    else:
-                        dist = 0
+                    dist = sensor_data[gy, gx]
                     covered_cells.add((gy,gx))
 
                     if label in active_classes:
