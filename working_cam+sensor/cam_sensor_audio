@@ -22,7 +22,7 @@ def headphone_listener():
     print("Headphone controls active")
 
     for event in dev.read_loop():
-        if event.type == ecodes.EV_KEY:z
+        if event.type == ecodes.EV_KEY:
             key_event = categorize(event)
 
             if key_event.keystate == 1:
@@ -154,7 +154,7 @@ if __name__=="__main__":
 
     threading.Thread(target=headphone_listener, daemon=True).start()
 
-    model=YOLO("best5_ncnn_model")
+    model=YOLO("best.pt")
 
     cap=cv2.VideoCapture(0,cv2.CAP_V4L2)
     if not cap.isOpened():
@@ -197,7 +197,7 @@ if __name__=="__main__":
                     gx=max(0,min(7,gx))
                     gy=max(0,min(7,gy))
 
-                    dist = sensor_data[gy, gx]
+                    dist=sensor_data[gy,gx]
                     covered_cells.add((gy,gx))
 
                     if label in active_classes:
