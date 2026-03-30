@@ -4,12 +4,43 @@ import numpy as np
 import subprocess
 import multiprocessing as mp
 from ultralytics import YOLO
+from evdev import InputDevice, categorize, ecodes
+import threading
+
+DEVICE_PATH = "/dev/input/event5"
 
 def speak_text(text):
     try:
         subprocess.call(["/usr/bin/espeak","-s","200","-v","en+f3",text])
     except Exception as e:
         print(f"Speech error: {e}")
+
+def headphone_listener():
+    dev = InputDevice(DEVICE_PATH)
+    global current_mode
+
+    print("Headphone controls active")
+
+    for event in dev.read_loop():
+        if event.type == ecodes.EV_KEY:
+            key_event = categorize(event)
+
+            if key_event.keystate == 1:
+                key = key_event.keycode
+
+                if key == "KEY_VOLUMEUP":
+                    current_mode = (current_mode % NUM_MODES) + 1
+                    speak_text(MODES[current_mode]["name"])
+                    print("Mode:", MODES[current_mode]["name"])
+
+                elif key == "KEY_VOLUMEDOWN":
+                    current_mode = (current_mode - 2) % NUM_MODES + 1
+                    speak_text(MODES[current_mode]["name"])
+                    print("Mode:", MODES[current_mode]["name"])
+
+                elif key in ["KEY_PLAYCD", "KEY_PAUSECD"]:
+                    print("Scene triggered")
+                    describe_scene([])
 
 def get_direction_descriptor(cx,cy,frame_w,frame_h):
     third_w=frame_w/3
@@ -121,26 +152,22 @@ if __name__=="__main__":
     p.daemon=True
     p.start()
 
-    model=YOLO("best.pt")
+    threading.Thread(target=headphone_listener, daemon=True).start()
+
+    model=YOLO("best5_ncnn_model")
 
     cap=cv2.VideoCapture(0,cv2.CAP_V4L2)
     if not cap.isOpened():
         print("Camera failed")
         exit()
 
-    print("Press m=mode, s=scene, ESC=exit")
+    print("System running (headphone controls enabled)")
 
     try:
         while True:
             ret,frame=cap.read()
             if not ret:
                 break
-
-            key=cv2.waitKey(1)
-
-            if key==ord('m'):
-                current_mode=(current_mode%NUM_MODES)+1
-                safe_speak(MODES[current_mode]["name"])
 
             with sensor_lock:
                 sensor_data=np.array(shared_sensor_data[:],dtype=np.int32).reshape((8,8))
@@ -153,7 +180,6 @@ if __name__=="__main__":
             frame_now=time.time()
             _cleanup_tracked_objects(frame_now)
 
-            audio_alert_sent=False
             covered_cells=set()
             current_detections=[]
 
@@ -184,58 +210,22 @@ if __name__=="__main__":
                     current_detections.append({"label":display_label})
 
                     cv2.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),2)
-                    cv2.putText(frame,f"{display_label} {dist}mm",(x1,y1-10),
-                                cv2.FONT_HERSHEY_SIMPLEX,0.5,(0,255,0),2)
 
-                    if 0<dist<1000:
+                    if 0<dist<1000 and current_mode!=4:
                         obj=_find_tracked_object(display_label,(cx,cy))
-                        should_alert=False
-
                         if obj is None:
-                            obj={"label":display_label,"center":(cx,cy),
-                                 "last_alert":frame_now,"last_seen":frame_now}
-                            tracked_objects.append(obj)
-                            should_alert=True
-                        else:
-                            moved=_euclidean_dist((cx,cy),obj["center"])
-                            obj["center"]=(cx,cy)
-                            obj["last_seen"]=frame_now
-
-                            if (frame_now-obj["last_alert"])>ALERT_REMINDER_SECONDS and moved<TRACKED_OBJECT_MOVE_THRESHOLD_PX:
-                                should_alert=True
-                                obj["last_alert"]=frame_now
-
-                        if should_alert and not audio_alert_sent and current_mode!=4:
+                            tracked_objects.append({"label":display_label,"center":(cx,cy),
+                                                    "last_alert":frame_now,"last_seen":frame_now})
                             direction=get_direction_descriptor(cx,cy,frame.shape[1],frame.shape[0])
                             safe_speak(f"{display_label} {direction}")
-                            audio_alert_sent=True
-
-            if catch_unknown and current_mode!=4:
-                unknown_triggered=False
-                for r in range(4):
-                    for c in range(8):
-                        if (r,c) not in covered_cells:
-                            d=sensor_data[r,c]
-                            if 0<d<1000:
-                                unknown_triggered=True
-                                break
-                    if unknown_triggered:
-                        break
-                if unknown_triggered:
-                    safe_speak("unknown object ahead")
-
-            if key==ord('s'):
-                describe_scene(current_detections)
 
             if current_mode==4:
                 describe_scene(current_detections)
-                time.sleep(2)
-                continue
 
             cv2.imshow("Camera",frame)
             cv2.imshow("Sensor",draw_sensor(sensor_data))
 
-            if key==27:
+            if cv2.waitKey(1)==27:
                 break
 
     finally:
