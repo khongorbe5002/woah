@@ -27,10 +27,7 @@ DOUBLE_PRESS_WINDOW = 0.5
 # TTS
 # =========================
 def speak_text(text):
-    try:
-        subprocess.Popen(["espeak", text])
-    except:
-        pass
+    subprocess.Popen(["espeak", text])
 
 def speak_blocking(text):
     subprocess.call(["espeak", text])
@@ -63,43 +60,36 @@ def draw_sensor(sensor_data):
 def run_sensor_process(shared_array, lock):
     from working_cam_sensor import VL53L5CXSensor
     
-    try:
-        sensor = VL53L5CXSensor(verbose=False)
-    except Exception as e:
-        print(f"Sensor failed to initialize: {e}")
-        return
+    sensor = VL53L5CXSensor(verbose=False)
 
     while True:
         data = sensor.get_ranging_data()
         if data is not None:
-            flat_data = data.flatten()
+            flat = data.flatten()
             with lock:
                 for i in range(64):
-                    shared_array[i] = flat_data[i]
+                    shared_array[i] = flat[i]
         time.sleep(0.033)
 
 # =========================
-# SCENE DESCRIPTION (SAFE + LIGHT)
+# SCENE DESCRIPTION (BLIP)
 # =========================
 def run_scene_description(frame):
     scene_active.set()
     speak_blocking("Analyzing scene")
 
     try:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        avg = np.mean(gray)
+        from transformers import pipeline
+        captioner = pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
 
-        if avg < 50:
-            desc = "Dark environment"
-        elif avg > 180:
-            desc = "Bright environment"
-        else:
-            desc = "Normal lighting"
+        result = captioner(frame)[0]['generated_text']
 
-        speak_blocking(desc)
+        print("Scene:", result)
+        speak_blocking(result)
 
-    except:
-        speak_blocking("Scene analysis failed")
+    except Exception as e:
+        print("Scene error:", e)
+        speak_blocking("Scene failed")
 
     scene_active.clear()
 
@@ -126,13 +116,13 @@ def toggle_mode():
         speak_text("Normal mode")
 
 # =========================
-# HEADPHONE LISTENER
+# HEADPHONE LISTENER (event9)
 # =========================
 def headphone_listener():
     global last_volume_time
 
-    dev = InputDevice('/dev/input/event5')
-    print("Headphone control ready")
+    dev = InputDevice('/dev/input/event9')
+    print("Headphone control ready:", dev)
 
     for event in dev.read_loop():
         if event.type == ecodes.EV_KEY:
@@ -140,13 +130,17 @@ def headphone_listener():
 
             if key.keystate == key.key_down:
 
-                if key.keycode == 'KEY_PLAYCD':
+                # ▶️ Middle button
+                if key.keycode in ['KEY_PLAYCD', 'KEY_PLAYPAUSE']:
+                    print("Scene trigger")
                     trigger_scene_global()
 
-                elif key.keycode == 'KEY_VOLUMEUP':
+                # 🔊 Volume up double press
+                elif key.keycode in ['KEY_VOLUMEUP', 'KEY_VOLUME_UP']:
                     now = time.time()
 
                     if now - last_volume_time < DOUBLE_PRESS_WINDOW:
+                        print("Mode toggle")
                         toggle_mode()
                         last_volume_time = 0
                     else:
@@ -187,21 +181,17 @@ if __name__ == '__main__':
 
             latest_frame = frame
 
-            # =========================
-            # GET SENSOR DATA (UNCHANGED)
-            # =========================
+            # Get sensor data
             with sensor_lock:
                 current_shared_data = shared_sensor_data[:]
             
             sensor_data = np.array(current_shared_data, dtype=np.int32).reshape((8, 8))
 
             # =========================
-            # MODE HANDLING (NON-INVASIVE)
+            # NORMAL MODE (UNCHANGED)
             # =========================
-
             if current_mode == MODE_NORMAL:
 
-                # ===== YOUR ORIGINAL CODE (UNCHANGED) =====
                 if not scene_active.is_set():
                     results = model(frame, verbose=False)
 
@@ -230,11 +220,12 @@ if __name__ == '__main__':
                                 if time.time() - last_alert > 1:
                                     speak_text(f"{label} ahead")
                                     last_alert = time.time()
-                # =========================================
 
+            # =========================
+            # SCENARIO MODE
+            # =========================
             elif current_mode == MODE_SCENARIO:
 
-                # Lightweight safety mode (no YOLO slowdown)
                 center_dist = sensor_data[3:5, 3:5].mean()
 
                 if center_dist > 0 and center_dist < 700:
@@ -243,7 +234,7 @@ if __name__ == '__main__':
                         last_alert = time.time()
 
             # =========================
-            # DISPLAY (UNCHANGED)
+            # DISPLAY
             # =========================
             grid = draw_sensor(sensor_data)
 
