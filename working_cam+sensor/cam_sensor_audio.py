@@ -1,17 +1,11 @@
-import os
-os.environ["HF_HOME"] = "/home/pi/hf_cache"
-
 import cv2
 import time
 import numpy as np
 import subprocess
 import multiprocessing as mp
 import threading
-import torch
 from ultralytics import YOLO
 from evdev import InputDevice, categorize, ecodes
-
-torch.set_num_threads(1)
 
 # =========================
 # MODES + CLASSES
@@ -40,8 +34,6 @@ _mode_lock = threading.Lock()
 # =========================
 # GLOBALS
 # =========================
-scene_active = threading.Event()
-latest_frame = None
 last_volume_time = 0
 DOUBLE_PRESS_WINDOW = 0.5
 
@@ -52,42 +44,50 @@ def speak_text(text):
     subprocess.Popen(["espeak", text])
 
 # =========================
-# SENSOR PROCESS (CORRECT)
+# SENSOR VISUALIZATION
+# =========================
+def draw_sensor(sensor_data):
+    size = 400
+    cell = size // 8
+    img = np.zeros((size, size, 3), dtype=np.uint8)
+
+    for r in range(8):
+        for c in range(8):
+            d = sensor_data[r, c]
+            if d == 0:
+                color = (50, 50, 50)
+            else:
+                v = min(d, 3000) / 3000
+                color = (int(255 * v), int(255 * (1 - v)), 0)
+
+            x1, y1 = c * cell, r * cell
+            x2, y2 = x1 + cell, y1 + cell
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, -1)
+    return img
+
+# =========================
+# SENSOR PROCESS (UNCHANGED)
 # =========================
 def run_sensor_process(shared_array, lock):
     from working_cam_sensor import VL53L5CXSensor
     
     sensor = VL53L5CXSensor(verbose=False)
-    print("Sensor initialized")
 
     while True:
-        try:
-            data = sensor.get_ranging_data()
-
-            if data is not None and data.shape == (8, 8):
-
-                # ✅ Correct orientation
-                data = np.rot90(data, 2)
-
-                # ✅ Remove invalid readings
-                data = np.where((data == 0) | (data > 3000), 0, data)
-
-                flat = data.flatten()
-
-                with lock:
-                    for i in range(64):
-                        shared_array[i] = int(flat[i])
-
-        except Exception as e:
-            print("Sensor error:", e)
-
-        time.sleep(0.02)
+        data = sensor.get_ranging_data()
+        if data is not None:
+            flat = data.flatten()
+            with lock:
+                for i in range(64):
+                    shared_array[i] = flat[i]
+        time.sleep(0.033)
 
 # =========================
 # MODE TOGGLE
 # =========================
 def toggle_mode():
     global current_mode
+
     with _mode_lock:
         current_mode += 1
         if current_mode > NUM_MODES:
@@ -108,7 +108,6 @@ def headphone_listener():
             key = categorize(event)
 
             if key.keystate == key.key_down:
-
                 if key.keycode in ['KEY_VOLUMEUP', 'KEY_VOLUME_UP']:
                     now = time.time()
 
@@ -149,10 +148,15 @@ if __name__ == '__main__':
         with sensor_lock:
             sensor_data = np.array(shared_sensor_data[:], dtype=np.int32).reshape((8, 8))
 
-        results = model(frame, imgsz=320, verbose=False)
+        results = model(frame, verbose=False)
 
         with _mode_lock:
             mode_cfg = MODES[current_mode]
+
+        # 🔥 Track best object
+        best_distance = 99999
+        best_label = None
+        best_direction = None
 
         for r in results:
             for b in r.boxes:
@@ -168,37 +172,42 @@ if __name__ == '__main__':
                     continue
 
                 # =========================
-                # CAMERA → SENSOR MAPPING
+                # BBOX → SENSOR GRID
                 # =========================
-                cx = int(((x1 + x2) / 2) / frame.shape[1] * 8)
-                cy = int(((y1 + y2) / 2) / frame.shape[0] * 8)
+                norm_x1 = x1 / frame.shape[1]
+                norm_y1 = y1 / frame.shape[0]
+                norm_x2 = x2 / frame.shape[1]
+                norm_y2 = y2 / frame.shape[0]
 
-                cx = max(0, min(7, cx))
-                cy = max(0, min(7, cy))
+                col1 = int(norm_x1 * 8)
+                row1 = int(norm_y1 * 8)
+                col2 = int(norm_x2 * 8)
+                row2 = int(norm_y2 * 8)
 
-                # Flip X if needed
-                cx = 7 - cx
+                col1 = max(0, min(7, col1))
+                col2 = max(0, min(7, col2))
+                row1 = max(0, min(7, row1))
+                row2 = max(0, min(7, row2))
 
-                # =========================
-                # PROPER DISTANCE
-                # =========================
-                region = sensor_data[max(0,cy-1):min(8,cy+2),
-                                     max(0,cx-1):min(8,cx+2)]
+                distances = []
 
-                valid = region[region > 0]
+                for rr in range(row1, row2 + 1):
+                    for cc in range(col1, col2 + 1):
+                        d = sensor_data[rr, cc]
+                        if d > 0:
+                            distances.append(d)
 
-                if len(valid) == 0:
+                if len(distances) == 0:
                     continue
 
-                dist = int(np.min(valid))  # closest object
-
-                # Filter unrealistic values
-                if dist < 150 or dist > 2500:
-                    continue
+                dist = min(distances)
 
                 # =========================
-                # DIRECTION (CORRECTED)
+                # CAMERA-BASED DIRECTION
                 # =========================
+                cx_pixel = int((x1 + x2) / 2)
+                cx = int(cx_pixel / frame.shape[1] * 8)
+
                 if cx <= 2:
                     direction = "left"
                 elif cx >= 5:
@@ -206,32 +215,39 @@ if __name__ == '__main__':
                 else:
                     direction = "ahead"
 
-                # =========================
-                # DISPLAY + SPEECH
-                # =========================
+                # Track closest object
+                if dist < best_distance:
+                    best_distance = dist
+                    best_label = label
+                    best_direction = direction
+
+                # Draw
                 cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
                 cv2.putText(frame, f"{label} {dist}mm",
-                            (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX,
+                            (x1, y1-10),
+                            cv2.FONT_HERSHEY_SIMPLEX,
                             0.5, (0,255,0), 2)
 
-                if dist < 1200 and time.time() - last_alert > 1:
-                    speak_text(f"{label} {direction}")
-                    last_alert = time.time()
+        # =========================
+        # SPEAK ONLY BEST OBJECT
+        # =========================
+        if best_label is not None:
+            if best_distance < 1200 and time.time() - last_alert > 1.5:
+                speak_text(f"{best_label} {best_direction}")
+                last_alert = time.time()
 
-        # =========================
-        # UNKNOWN DETECTION (MODE 2)
-        # =========================
+        # UNKNOWN (Mode 2)
         if mode_cfg["catch_unknown"]:
-            center = sensor_data[3:5, 3:5]
-            valid = center[center > 0]
-
-            if len(valid) > 0:
-                d = int(np.min(valid))
-                if d < 800 and time.time() - last_alert > 1:
+            center = sensor_data[3:5, 3:5].mean()
+            if center > 0 and center < 800:
+                if time.time() - last_alert > 1:
                     speak_text("Unknown obstacle ahead")
                     last_alert = time.time()
 
+        # DISPLAY
+        grid = draw_sensor(sensor_data)
         cv2.imshow("Camera", frame)
+        cv2.imshow("Sensor", grid)
 
         if cv2.waitKey(1) == 27:
             break
