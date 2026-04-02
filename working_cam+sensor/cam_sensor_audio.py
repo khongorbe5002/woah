@@ -156,7 +156,9 @@ def toggle_mode():
 # HEADPHONE LISTENER
 # =========================
 def headphone_listener():
-    dev = InputDevice('/dev/input/event9')
+    global last_vol_up_time
+
+    dev = InputDevice('/dev/input/event5')
     print("Headphone ready:", dev)
 
     for event in dev.read_loop():
@@ -165,7 +167,9 @@ def headphone_listener():
 
             if key.keystate == key.key_down:
 
-                # 🎬 Scene button (unchanged)
+                print("KEY:", key.keycode)
+
+                # 🎬 Scene
                 if key.keycode in ['KEY_PLAYCD', 'KEY_PLAYPAUSE']:
                     if last_frame is not None:
                         threading.Thread(
@@ -174,9 +178,19 @@ def headphone_listener():
                             daemon=True
                         ).start()
 
-                # 🔊 SINGLE PRESS → MODE SWITCH
-                elif key.keycode in ['KEY_VOLUMEUP', 'KEY_VOLUME_UP']:
-                    toggle_mode()
+                # 🔊 DOUBLE CLICK → MODE SWITCH
+                elif key.keycode in ['KEY_VOLUMEUP', 'KEY_VOLUME_UP'] or \
+                     (isinstance(key.keycode, list) and 'KEY_VOLUMEUP' in key.keycode):
+
+                    now = time.time()
+
+                    if now - last_vol_up_time < DOUBLE_CLICK_WINDOW:
+                        print("DOUBLE CLICK → MODE SWITCH")
+                        toggle_mode()
+                        last_vol_up_time = 0
+                    else:
+                        last_vol_up_time = now
+
     print(f"Switched to Mode {current_mode}: {MODES[current_mode]['name']}")
 # =========================
 # MAIN
