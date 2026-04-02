@@ -147,16 +147,18 @@ def run_sensor_process(shared_array, lock):
 # =========================
 def toggle_mode():
     global current_mode
-    with _mode_lock:
-        current_mode = current_mode + 1 if current_mode < NUM_MODES else 1
-        speak_text(MODES[current_mode]["spoken"])
-        print("Mode:", MODES[current_mode]["name"])
 
+    with _mode_lock:
+        current_mode = (current_mode % NUM_MODES) + 1
+        mode_name = MODES[current_mode]["name"]
+
+    print(f"[MODE] {mode_name}")
+    speak_text(f"{mode_name} mode")
 # =========================
 # HEADPHONE LISTENER
 # =========================
 def headphone_listener():
-    global last_vol_up_time
+    global last_press_time
 
     dev = InputDevice('/dev/input/event5')
     print("Headphone ready:", dev)
@@ -169,8 +171,9 @@ def headphone_listener():
 
                 print("KEY:", key.keycode)
 
-                # 🎬 Scene
+                # 🎬 Scene (middle button) — FIXED
                 if key.keycode in ['KEY_PLAYCD', 'KEY_PLAYPAUSE']:
+                    print("SCENE BUTTON")
                     if last_frame is not None:
                         threading.Thread(
                             target=run_scene_description,
@@ -178,20 +181,19 @@ def headphone_listener():
                             daemon=True
                         ).start()
 
-                # 🔊 DOUBLE CLICK → MODE SWITCH
-                elif key.keycode in ['KEY_VOLUMEUP', 'KEY_VOLUME_UP'] or \
-                     (isinstance(key.keycode, list) and 'KEY_VOLUMEUP' in key.keycode):
+                # 🔊 Volume Up (DOUBLE CLICK)
+                elif key.keycode in ['KEY_NEXTSONG', 'KEY_NEXTSONG'] or \
+                     (isinstance(key.keycode, list) and 'KEY_NEXTSONG' in key.keycode):
 
                     now = time.time()
 
-                    if now - last_vol_up_time < DOUBLE_CLICK_WINDOW:
-                        print("DOUBLE CLICK → MODE SWITCH")
+                    # Slightly longer window (Bluetooth lag)
+                    if now - last_press_time < 0.6:
+                        print("MODE SWITCH")
                         toggle_mode()
-                        last_vol_up_time = 0
+                        last_press_time = 0
                     else:
-                        last_vol_up_time = now
-
-    print(f"Switched to Mode {current_mode}: {MODES[current_mode]['name']}")
+                        last_press_time = now
 # =========================
 # MAIN
 # =========================
@@ -332,9 +334,17 @@ if __name__ == '__main__':
                         speak_text("Unknown obstacle ahead")
                         last_alert = time.time()
 
+            with _mode_lock:
+                mode_name = MODES[current_mode]["name"]
+            
+            cv2.putText(frame, f"Mode: {mode_name}",
+                        (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (0, 255, 255), 2)
+            
             cv2.imshow("Camera", frame)
             cv2.imshow("Sensor", draw_sensor(sensor_data))
-
+            
             if cv2.waitKey(1) == 27:
                 break
 
