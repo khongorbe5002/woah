@@ -1,16 +1,19 @@
+import os
+os.environ["HF_HOME"] = "/home/pi/hf_cache"   # cache models
+
 import cv2
 import time
 import numpy as np
 import subprocess
 import multiprocessing as mp
 import threading
+import torch
 from ultralytics import YOLO
 from evdev import InputDevice, categorize, ecodes
 
 # =========================
-# LIMIT CPU (IMPORTANT)
+# CPU LIMIT (CRITICAL)
 # =========================
-import torch
 torch.set_num_threads(2)
 
 # =========================
@@ -82,24 +85,31 @@ def run_sensor_process(shared_array, lock):
         time.sleep(0.033)
 
 # =========================
-# SCENE DESCRIPTION (FAST BLIP)
+# SCENE DESCRIPTION (FAST)
 # =========================
 def run_scene_description(frame):
     global blip_model, blip_processor
+
+    from PIL import Image
 
     scene_active.set()
     speak_blocking("Analyzing scene")
 
     try:
-        from PIL import Image
+        if frame is None:
+            speak_blocking("No image")
+            scene_active.clear()
+            return
 
-        # Resize for speed
-        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).resize((224, 224))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        # 🔥 smaller image = faster
+        image = Image.fromarray(rgb).convert("RGB").resize((160, 160))
 
         inputs = blip_processor(image, return_tensors="pt")
 
         with torch.no_grad():
-            out = blip_model.generate(**inputs, max_new_tokens=20)
+            out = blip_model.generate(**inputs, max_new_tokens=15)
 
         caption = blip_processor.decode(out[0], skip_special_tokens=True)
 
@@ -145,7 +155,7 @@ def headphone_listener():
     global last_volume_time
 
     dev = InputDevice('/dev/input/event9')
-    print("Headphone control ready:", dev)
+    print("Headphone ready:", dev)
 
     for event in dev.read_loop():
         if event.type == ecodes.EV_KEY:
@@ -153,7 +163,7 @@ def headphone_listener():
 
             if key.keystate == key.key_down:
 
-                # ▶️ Scene trigger
+                # ▶️ Scene button
                 if key.keycode in ['KEY_PLAYCD', 'KEY_PLAYPAUSE']:
                     trigger_scene_global()
 
@@ -183,13 +193,16 @@ if __name__ == '__main__':
 
     # Load YOLO
     print("Loading YOLO...")
-    model = YOLO("best6.pt")
+    model = YOLO("best.pt")
 
-    # Load BLIP ONCE (CRITICAL FIX)
+    # 🔥 Load BLIP ONCE (FIXES DELAY)
     print("Loading BLIP (one-time)...")
     from transformers import BlipProcessor, BlipForConditionalGeneration
     blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
-    blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+    blip_model = BlipForConditionalGeneration.from_pretrained(
+        "Salesforce/blip-image-captioning-base"
+    ).to("cpu")
+    blip_model.eval()
     print("BLIP ready")
 
     # Camera
@@ -198,7 +211,7 @@ if __name__ == '__main__':
         print("Camera failed")
         exit()
 
-    # Start headphone thread
+    # Headphone control thread
     threading.Thread(target=headphone_listener, daemon=True).start()
 
     last_alert = 0
