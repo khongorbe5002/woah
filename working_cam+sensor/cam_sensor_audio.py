@@ -247,7 +247,7 @@ if __name__ == '__main__':
             with _mode_lock:
                 mode_cfg = MODES[current_mode]
 
-            best_distance = 99999
+            best_distance = None
             best_label = None
             best_direction = None
 
@@ -288,7 +288,7 @@ if __name__ == '__main__':
                     else:
                         direction = "ahead"
 
-                    if dist < best_distance:
+                    if best_distance is None or (dist is not None and dist < best_distance):
                         best_distance = dist
                         best_label = label
                         best_direction = direction
