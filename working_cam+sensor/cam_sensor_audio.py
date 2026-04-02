@@ -230,7 +230,7 @@ if __name__ == '__main__':
 
     # YOLO
     print("Loading YOLO...")
-    model = YOLO("best.pt")
+    model = YOLO("best6_ncnn_model")
 
     # BLIP LOAD (ONE TIME)
     print("Loading BLIP...")
@@ -263,13 +263,9 @@ if __name__ == '__main__':
             ret, frame = cap.read()
             if not ret:
                 break
-            
-            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
-            
-            # DEBUG overlay
-            cv2.putText(frame, "ROTATED", (50, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1,
-                        (0, 0, 255), 3)
+         
+            frame = cv2.transpose(frame)
+            frame = cv2.flip(frame, 1)
             
             last_frame = frame
 
