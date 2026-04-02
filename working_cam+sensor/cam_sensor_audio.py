@@ -1,5 +1,5 @@
 import os
-os.environ["HF_HOME"] = "/home/pi/hf_cache"   # cache models
+
 
 import cv2
 import time
