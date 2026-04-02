@@ -247,8 +247,8 @@ if __name__ == '__main__':
         print("Camera failed")
         exit()
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
     cap.set(cv2.CAP_PROP_FPS, 30)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
@@ -263,15 +263,24 @@ if __name__ == '__main__':
             ret, frame = cap.read()
             if not ret:
                 break
-
+            
+            frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+            
+            # DEBUG overlay
+            cv2.putText(frame, "ROTATED", (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1,
+                        (0, 0, 255), 3)
+            
             last_frame = frame
+
+            
 
             with sensor_lock:
                 sensor_data = np.array(shared_sensor_data[:], dtype=np.int32).reshape((8, 8))
 
             last_sensor = sensor_data
 
-            # 🔥 KEEP CAMERA + SENSOR RUNNING DURING SCENE
+        
             if scene_active.is_set():
                 cv2.imshow("Camera", frame)
                 cv2.imshow("Sensor", draw_sensor(sensor_data))
