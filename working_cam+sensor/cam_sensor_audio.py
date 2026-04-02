@@ -183,7 +183,7 @@ if __name__ == '__main__':
 
     # Load YOLO
     print("Loading YOLO...")
-    model = YOLO("best.pt")
+    model = YOLO("best6.pt")
 
     # Load BLIP ONCE (CRITICAL FIX)
     print("Loading BLIP (one-time)...")
