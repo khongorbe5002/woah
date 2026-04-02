@@ -8,6 +8,12 @@ from ultralytics import YOLO
 from evdev import InputDevice, categorize, ecodes
 
 # =========================
+# LIMIT CPU (IMPORTANT)
+# =========================
+import torch
+torch.set_num_threads(2)
+
+# =========================
 # MODES
 # =========================
 MODE_NORMAL = 0
@@ -22,6 +28,10 @@ latest_frame = None
 
 last_volume_time = 0
 DOUBLE_PRESS_WINDOW = 0.5
+
+# BLIP globals
+blip_model = None
+blip_processor = None
 
 # =========================
 # TTS
@@ -72,20 +82,29 @@ def run_sensor_process(shared_array, lock):
         time.sleep(0.033)
 
 # =========================
-# SCENE DESCRIPTION (BLIP)
+# SCENE DESCRIPTION (FAST BLIP)
 # =========================
 def run_scene_description(frame):
+    global blip_model, blip_processor
+
     scene_active.set()
     speak_blocking("Analyzing scene")
 
     try:
-        from transformers import pipeline
-        captioner = pipeline("image-to-text", model="Salesforce/blip-image-captioning-base")
+        from PIL import Image
 
-        result = captioner(frame)[0]['generated_text']
+        # Resize for speed
+        image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)).resize((224, 224))
 
-        print("Scene:", result)
-        speak_blocking(result)
+        inputs = blip_processor(image, return_tensors="pt")
+
+        with torch.no_grad():
+            out = blip_model.generate(**inputs, max_new_tokens=20)
+
+        caption = blip_processor.decode(out[0], skip_special_tokens=True)
+
+        print("Scene:", caption)
+        speak_blocking(caption)
 
     except Exception as e:
         print("Scene error:", e)
@@ -95,7 +114,11 @@ def run_scene_description(frame):
 
 def trigger_scene(frame):
     if not scene_active.is_set():
-        threading.Thread(target=run_scene_description, args=(frame.copy(),), daemon=True).start()
+        threading.Thread(
+            target=run_scene_description,
+            args=(frame.copy(),),
+            daemon=True
+        ).start()
 
 def trigger_scene_global():
     global latest_frame
@@ -116,7 +139,7 @@ def toggle_mode():
         speak_text("Normal mode")
 
 # =========================
-# HEADPHONE LISTENER (event9)
+# HEADPHONE LISTENER
 # =========================
 def headphone_listener():
     global last_volume_time
@@ -130,17 +153,15 @@ def headphone_listener():
 
             if key.keystate == key.key_down:
 
-                # ▶️ Middle button
+                # ▶️ Scene trigger
                 if key.keycode in ['KEY_PLAYCD', 'KEY_PLAYPAUSE']:
-                    print("Scene trigger")
                     trigger_scene_global()
 
-                # 🔊 Volume up double press
+                # 🔊 Double press
                 elif key.keycode in ['KEY_VOLUMEUP', 'KEY_VOLUME_UP']:
                     now = time.time()
 
                     if now - last_volume_time < DOUBLE_PRESS_WINDOW:
-                        print("Mode toggle")
                         toggle_mode()
                         last_volume_time = 0
                     else:
@@ -151,6 +172,7 @@ def headphone_listener():
 # =========================
 if __name__ == '__main__':
     
+    # Sensor multiprocessing
     shared_sensor_data = mp.Array('i', 64)
     sensor_lock = mp.Lock()
 
@@ -159,14 +181,24 @@ if __name__ == '__main__':
     p.daemon = True
     p.start()
 
+    # Load YOLO
     print("Loading YOLO...")
     model = YOLO("best.pt")
 
+    # Load BLIP ONCE (CRITICAL FIX)
+    print("Loading BLIP (one-time)...")
+    from transformers import BlipProcessor, BlipForConditionalGeneration
+    blip_processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
+    blip_model = BlipForConditionalGeneration.from_pretrained("Salesforce/blip-image-captioning-base")
+    print("BLIP ready")
+
+    # Camera
     cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
     if not cap.isOpened():
         print("Camera failed")
         exit()
 
+    # Start headphone thread
     threading.Thread(target=headphone_listener, daemon=True).start()
 
     last_alert = 0
@@ -222,7 +254,7 @@ if __name__ == '__main__':
                                     last_alert = time.time()
 
             # =========================
-            # SCENARIO MODE
+            # SCENARIO MODE (FAST)
             # =========================
             elif current_mode == MODE_SCENARIO:
 
