@@ -265,7 +265,7 @@ if __name__ == '__main__':
                 break
          
             frame = cv2.transpose(frame)
-            frame = cv2.flip(frame, 1)
+            frame = cv2.flip(frame, 0)
             
             last_frame = frame
 
