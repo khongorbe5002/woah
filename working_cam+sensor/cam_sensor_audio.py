@@ -276,10 +276,10 @@ if __name__ == '__main__':
                             if d > 0:
                                 distances.append(d)
 
-                    if len(distances) == 0:
-                        continue
-
-                    dist = min(distances)
+                    if len(distances) > 0:
+                        dist = min(distances)
+                    else:
+                        dist = None
 
                     if cx <= 2:
                         direction = "left"
@@ -301,8 +301,13 @@ if __name__ == '__main__':
 
             # AUDIO
             if best_label is not None:
-                if best_distance < 1200 and time.time() - last_alert > 1.5:
-                    speak_text(f"{best_label} {best_direction}")
+                if time.time() - last_alert > 1.5:
+            
+                    if best_distance is not None and best_distance < 1200:
+                        speak_text(f"{best_label} {best_direction}")
+                    else:
+                        speak_text(f"{best_label} {best_direction}")
+            
                     last_alert = time.time()
 
             # UNKNOWN (Mode 2)
