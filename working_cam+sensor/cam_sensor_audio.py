@@ -143,16 +143,25 @@ def run_sensor_process(shared_array, lock):
         time.sleep(0.033)
 
 # =========================
+# MODE CONFIG
+# =========================
+MODE_ORDER = [1, 3, 2]   # Normal → Emergency → Everything
+current_mode_index = 0
+current_mode = MODE_ORDER[current_mode_index]
+_mode_lock = threading.Lock()
+
+# =========================
 # MODE TOGGLE
 # =========================
 def toggle_mode():
-    global current_mode
+    global current_mode_index, current_mode
 
     with _mode_lock:
-        current_mode = (current_mode % NUM_MODES) + 1
+        current_mode_index = (current_mode_index + 1) % len(MODE_ORDER)
+        current_mode = MODE_ORDER[current_mode_index]
         mode_name = MODES[current_mode]["name"]
 
-    print(f"[MODE] {mode_name}")
+    print(f"[MODE SWITCH] {mode_name}")
     speak_text(f"{mode_name} mode")
 # =========================
 # HEADPHONE LISTENER
@@ -171,25 +180,37 @@ def headphone_listener():
 
                 print("KEY:", key.keycode)
 
-                # 🎬 Scene (middle button) — FIXED
-                if key.keycode in ['KEY_PLAYCD', 'KEY_PLAYPAUSE']:
-                    print("SCENE BUTTON")
-                    if last_frame is not None:
+                key_str = str(key.keycode)
+
+                # =========================
+                # 🎬 SCENE MODE (RESTORED)
+                # =========================
+                if any(k in key_str for k in ['PLAY', 'PAUSE']):
+                    print("SCENE BUTTON DETECTED")
+
+                    if last_frame is not None and not scene_active.is_set():
                         threading.Thread(
                             target=run_scene_description,
                             args=(last_frame.copy(),),
                             daemon=True
                         ).start()
 
-                # 🔊 Volume Up (DOUBLE CLICK)
-                elif key.keycode in ['KEY_NEXTSONG', 'KEY_NEXTSONG'] or \
-                     (isinstance(key.keycode, list) and 'KEY_NEXTSONG' in key.keycode):
+                # =========================
+                # ⏭ NEXT SONG → MODE SWITCH (PRIMARY)
+                # =========================
+                elif 'NEXTSONG' in key_str:
+                    print("NEXT → MODE SWITCH")
+                    toggle_mode()
+
+                # =========================
+                # 🔊 VOLUME UP DOUBLE CLICK (BACKUP)
+                # =========================
+                elif 'VOLUMEUP' in key_str:
 
                     now = time.time()
 
-                    # Slightly longer window (Bluetooth lag)
-                    if now - last_press_time < 0.6:
-                        print("MODE SWITCH")
+                    if now - last_press_time < DOUBLE_PRESS_WINDOW:
+                        print("DOUBLE CLICK → MODE SWITCH")
                         toggle_mode()
                         last_press_time = 0
                     else:
@@ -333,15 +354,51 @@ if __name__ == '__main__':
                     if time.time() - last_alert > 1:
                         speak_text("Unknown obstacle ahead")
                         last_alert = time.time()
-
+            
             with _mode_lock:
                 mode_name = MODES[current_mode]["name"]
             
-            cv2.putText(frame, f"Mode: {mode_name}",
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7, (0, 255, 255), 2)
+            # 🔥 Strong colors per mode
+            if current_mode == 1:
+                bg_color = (0, 255, 0)      # green
+            elif current_mode == 2:
+                bg_color = (0, 255, 255)    # yellow
+            else:
+                bg_color = (0, 0, 255)      # red
             
+            text = f"MODE: {mode_name}"
+            
+            font = cv2.FONT_HERSHEY_DUPLEX   # less “hershey-ish”
+            font_scale = 1.4
+            thickness = 5
+            
+            (text_w, text_h), _ = cv2.getTextSize(text, font, font_scale, thickness)
+            
+            x, y = 10, 60
+            
+            # 🔲 BIG background box
+            cv2.rectangle(frame,
+                          (x - 15, y - text_h - 15),
+                          (x + text_w + 15, y + 15),
+                          bg_color,
+                          -1)
+            
+            # 🔥 OUTLINE (black stroke)
+            cv2.putText(frame, text,
+                        (x, y),
+                        font,
+                        font_scale,
+                        (0, 0, 0),
+                        thickness + 3)
+            
+            # 🔥 FILL (white text on top)
+            cv2.putText(frame, text,
+                        (x, y),
+                        font,
+                        font_scale,
+                        (255, 255, 255),
+                        thickness)
+                        
             cv2.imshow("Camera", frame)
             cv2.imshow("Sensor", draw_sensor(sensor_data))
             
