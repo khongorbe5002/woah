@@ -358,46 +358,10 @@ if __name__ == '__main__':
             with _mode_lock:
                 mode_name = MODES[current_mode]["name"]
             
-            # 🔥 Strong colors per mode
-            if current_mode == 1:
-                bg_color = (0, 255, 0)      # green
-            elif current_mode == 2:
-                bg_color = (0, 255, 255)    # yellow
-            else:
-                bg_color = (0, 0, 255)      # red
-            
-            text = f"MODE: {mode_name}"
-            
-            font = cv2.FONT_HERSHEY_DUPLEX   # less “hershey-ish”
-            font_scale = 1.4
-            thickness = 5
-            
-            (text_w, text_h), _ = cv2.getTextSize(text, font, font_scale, thickness)
-            
-            x, y = 10, 60
-            
-            # 🔲 BIG background box
-            cv2.rectangle(frame,
-                          (x - 15, y - text_h - 15),
-                          (x + text_w + 15, y + 15),
-                          bg_color,
-                          -1)
-            
-            # 🔥 OUTLINE (black stroke)
-            cv2.putText(frame, text,
-                        (x, y),
-                        font,
-                        font_scale,
-                        (0, 0, 0),
-                        thickness + 3)
-            
-            # 🔥 FILL (white text on top)
-            cv2.putText(frame, text,
-                        (x, y),
-                        font,
-                        font_scale,
-                        (255, 255, 255),
-                        thickness)
+            cv2.putText(frame, f"Mode: {mode_name}",
+                        (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.7, (0, 255, 255), 2)
                         
             cv2.imshow("Camera", frame)
             cv2.imshow("Sensor", draw_sensor(sensor_data))
