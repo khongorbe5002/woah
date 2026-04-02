@@ -177,7 +177,7 @@ def headphone_listener():
                 # 🔊 SINGLE PRESS → MODE SWITCH
                 elif key.keycode in ['KEY_VOLUMEUP', 'KEY_VOLUME_UP']:
                     toggle_mode()
-
+    print(f"Switched to Mode {current_mode}: {MODES[current_mode]['name']}")
 # =========================
 # MAIN
 # =========================
