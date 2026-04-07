@@ -11,7 +11,7 @@ from evdev import list_devices, InputDevice, categorize, ecodes
 from ultralytics import YOLO
 
 # =========================
-# CPU LIMIT (CRITICAL)
+# CPU LIMIT
 # =========================
 torch.set_num_threads(2)
 
@@ -47,45 +47,6 @@ def speak_text(text):
 
 def speak_blocking(text):
     subprocess.call(["espeak", text])
-
-# =========================
-# SENSOR VISUALIZATION
-# =========================
-def draw_sensor(sensor_data):
-    size = 400
-    cell = size // 8
-    img = np.zeros((size, size, 3), dtype=np.uint8)
-
-    for r in range(8):
-        for c in range(8):
-            d = sensor_data[r, c]
-            if d == 0:
-                color = (50, 50, 50)
-            else:
-                v = min(d, 3000) / 3000
-                color = (int(255 * v), int(255 * (1 - v)), 0)
-
-            x1, y1 = c * cell, r * cell
-            x2, y2 = x1 + cell, y1 + cell
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, -1)
-    return img
-
-# =========================
-# SENSOR PROCESS 
-# =========================
-def run_sensor_process(shared_array, lock):
-    from working_cam_sensor import VL53L5CXSensor
-    
-    sensor = VL53L5CXSensor(verbose=False)
-
-    while True:
-        data = sensor.get_ranging_data()
-        if data is not None:
-            flat = data.flatten()
-            with lock:
-                for i in range(64):
-                    shared_array[i] = flat[i]
-        time.sleep(0.033)
 
 # =========================
 # SCENE DESCRIPTION
@@ -187,13 +148,6 @@ def headphone_listener():
 # MAIN
 # =========================
 if __name__ == '__main__':
-    
-    shared_sensor_data = mp.Array('i', 64)
-    sensor_lock = mp.Lock()
-
-    p = mp.Process(target=run_sensor_process, args=(shared_sensor_data, sensor_lock))
-    p.daemon = True
-    p.start()
 
     model = YOLO("best6_ncnn_model")
 
@@ -219,11 +173,7 @@ if __name__ == '__main__':
             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             latest_frame = frame
 
-            with sensor_lock:
-                current_shared_data = shared_sensor_data[:]
-            
-            sensor_data = np.array(current_shared_data).reshape((8, 8))
-
+            # MODE LOGIC
             if current_mode == MODE_NORMAL:
                 active_classes = OBSTACLE_CLASSES - {"Person"}
                 catch_unknown = False
@@ -264,21 +214,20 @@ if __name__ == '__main__':
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.5, (0, 255, 0), 2)
 
-                        yolo_alert_triggered = True
-                        if time.time() - last_alert > 1:
-                            speak_text(f"{label} on your {direction}")
-                            last_alert = time.time()
+                        # ONLY ONE ALERT PER FRAME + COOLDOWN
+                        if not yolo_alert_triggered:
+                            if time.time() - last_alert > 2:
+                                speak_text(f"{label} on your {direction}")
+                                last_alert = time.time()
+                            yolo_alert_triggered = True
 
-                # ===== UNKNOWN (NO DISTANCE) =====
+                # UNKNOWN fallback (no distance)
                 if catch_unknown and not yolo_alert_triggered:
-                    if time.time() - last_alert > 1:
+                    if time.time() - last_alert > 2:
                         speak_text("Unknown object ahead")
                         last_alert = time.time()
 
-            grid = draw_sensor(sensor_data)
-
             cv2.imshow("Camera", frame)
-            cv2.imshow("Sensor", grid)
 
             if cv2.waitKey(1) == 27:
                 break
@@ -286,5 +235,3 @@ if __name__ == '__main__':
     finally:
         cap.release()
         cv2.destroyAllWindows()
-        p.terminate()
-        p.join()
