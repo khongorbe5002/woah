@@ -3,7 +3,6 @@ import cv2
 import time
 import numpy as np
 import subprocess
-import multiprocessing as mp
 import threading
 import torch
 import selectors
@@ -214,15 +213,16 @@ if __name__ == '__main__':
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.5, (0, 255, 0), 2)
 
-                        # ONLY ONE ALERT PER FRAME + COOLDOWN
+                        # ⚡ FAST + CONTROLLED SPEECH
                         if not yolo_alert_triggered:
+                            if time.time() - last_alert > 0.5:
                                 speak_text(f"{label} on your {direction}")
                                 last_alert = time.time()
                             yolo_alert_triggered = True
 
-                # UNKNOWN fallback (no distance)
+                # UNKNOWN fallback
                 if catch_unknown and not yolo_alert_triggered:
-                    if time.time() - last_alert > 2:
+                    if time.time() - last_alert > 0.5:
                         speak_text("Unknown object ahead")
                         last_alert = time.time()
 
