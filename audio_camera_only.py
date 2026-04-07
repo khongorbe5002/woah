@@ -38,8 +38,11 @@ latest_frame = None
 blip_model = None
 blip_processor = None
 
-# Track last spoken object
+# Speech + stability tracking
 last_announcement = ""
+stable_detection = ""
+stable_count = 0
+STABLE_THRESHOLD = 3  # small buffer
 
 # =========================
 # TTS
@@ -191,6 +194,11 @@ if __name__ == '__main__':
                     for b in r.boxes:
                         cls = int(b.cls[0])
                         label = model.names[cls]
+                        conf = float(b.conf[0])
+
+                        # 🔥 Ignore weak detections
+                        if conf < 0.5:
+                            continue
 
                         if label not in active_classes:
                             continue
@@ -207,25 +215,33 @@ if __name__ == '__main__':
                         else:
                             direction = "right"
 
+                        # Area = closest proxy
                         area = (x2 - x1) * (y2 - y1)
 
-                        # Pick largest object
+                        # Keep ONLY largest
                         if area > best_area:
                             best_area = area
                             best_detection = (label, direction)
 
+                        # Draw boxes
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(frame, f"{label} ({direction})",
                                     (x1, y1 - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.5, (0, 255, 0), 2)
 
-                # 🔊 Speak only if changed
+                # 🔊 Stability buffer + speech
                 if best_detection:
                     label, direction = best_detection
                     current_announcement = f"{label}-{direction}"
 
-                    if current_announcement != last_announcement:
+                    if current_announcement == stable_detection:
+                        stable_count += 1
+                    else:
+                        stable_detection = current_announcement
+                        stable_count = 1
+
+                    if stable_count >= STABLE_THRESHOLD and current_announcement != last_announcement:
                         speak_text(f"{label} on your {direction}")
                         last_announcement = current_announcement
 
