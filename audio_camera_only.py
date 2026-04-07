@@ -9,14 +9,8 @@ import selectors
 from evdev import list_devices, InputDevice, categorize, ecodes
 from ultralytics import YOLO
 
-# =========================
-# CPU LIMIT
-# =========================
 torch.set_num_threads(2)
 
-# =========================
-# MODES & CLASSES
-# =========================
 MODE_NORMAL = 0
 MODE_EVERYTHING = 1
 MODE_EMERGENCY = 2
@@ -29,27 +23,18 @@ OBSTACLE_CLASSES = {
     "Vehicle", "Washroom", "Water Fountain"
 }
 
-# =========================
-# GLOBALS
-# =========================
 scene_active = threading.Event()
 latest_frame = None
 
 blip_model = None
 blip_processor = None
 
-# =========================
-# TTS
-# =========================
 def speak_text(text):
     subprocess.Popen(["espeak", text])
 
 def speak_blocking(text):
     subprocess.call(["espeak", text])
 
-# =========================
-# SCENE DESCRIPTION
-# =========================
 def run_scene_description(frame):
     global blip_model, blip_processor
     from PIL import Image
@@ -93,9 +78,6 @@ def trigger_scene_global():
     if latest_frame is not None:
         trigger_scene(latest_frame)
 
-# =========================
-# MODE TOGGLES
-# =========================
 def toggle_everything_mode():
     global current_mode
     if current_mode == MODE_EVERYTHING:
@@ -114,9 +96,6 @@ def toggle_emergency_mode():
         current_mode = MODE_EMERGENCY
         speak_text("Emergency mode")
 
-# =========================
-# HEADPHONE LISTENER
-# =========================
 def headphone_listener():
     paths = list_devices()
     sel = selectors.DefaultSelector()
@@ -143,9 +122,6 @@ def headphone_listener():
                         elif k.keycode == 'KEY_PREVIOUSSONG':
                             toggle_emergency_mode()
 
-# =========================
-# MAIN
-# =========================
 if __name__ == '__main__':
 
     model = YOLO("best6_ncnn_model")
@@ -172,7 +148,6 @@ if __name__ == '__main__':
             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             latest_frame = frame
 
-            # MODE LOGIC
             if current_mode == MODE_NORMAL:
                 active_classes = OBSTACLE_CLASSES - {"Person"}
                 catch_unknown = False
@@ -197,7 +172,6 @@ if __name__ == '__main__':
 
                         x1, y1, x2, y2 = map(int, b.xyxy[0])
 
-                        # ===== DIRECTION ONLY =====
                         cx_norm = (x1 + x2) / 2 / frame.shape[1]
 
                         if cx_norm < 0.33:
@@ -213,16 +187,15 @@ if __name__ == '__main__':
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.5, (0, 255, 0), 2)
 
-                        # ⚡ FAST + CONTROLLED SPEECH
+                        # 🔥 KEY FIX: very small throttle (prevents lag)
                         if not yolo_alert_triggered:
-                            if time.time() - last_alert > 0.5:
+                            if time.time() - last_alert > 0.2:
                                 speak_text(f"{label} on your {direction}")
                                 last_alert = time.time()
                             yolo_alert_triggered = True
 
-                # UNKNOWN fallback
                 if catch_unknown and not yolo_alert_triggered:
-                    if time.time() - last_alert > 0.5:
+                    if time.time() - last_alert > 0.2:
                         speak_text("Unknown object ahead")
                         last_alert = time.time()
 
