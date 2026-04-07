@@ -9,8 +9,14 @@ import selectors
 from evdev import list_devices, InputDevice, categorize, ecodes
 from ultralytics import YOLO
 
+# =========================
+# CPU LIMIT
+# =========================
 torch.set_num_threads(2)
 
+# =========================
+# MODES & CLASSES
+# =========================
 MODE_NORMAL = 0
 MODE_EVERYTHING = 1
 MODE_EMERGENCY = 2
@@ -23,18 +29,30 @@ OBSTACLE_CLASSES = {
     "Vehicle", "Washroom", "Water Fountain"
 }
 
+# =========================
+# GLOBALS
+# =========================
 scene_active = threading.Event()
 latest_frame = None
 
 blip_model = None
 blip_processor = None
 
+# Track last spoken object
+last_announcement = ""
+
+# =========================
+# TTS
+# =========================
 def speak_text(text):
     subprocess.Popen(["espeak", text])
 
 def speak_blocking(text):
     subprocess.call(["espeak", text])
 
+# =========================
+# SCENE DESCRIPTION
+# =========================
 def run_scene_description(frame):
     global blip_model, blip_processor
     from PIL import Image
@@ -78,6 +96,9 @@ def trigger_scene_global():
     if latest_frame is not None:
         trigger_scene(latest_frame)
 
+# =========================
+# MODE TOGGLES
+# =========================
 def toggle_everything_mode():
     global current_mode
     if current_mode == MODE_EVERYTHING:
@@ -96,6 +117,9 @@ def toggle_emergency_mode():
         current_mode = MODE_EMERGENCY
         speak_text("Emergency mode")
 
+# =========================
+# HEADPHONE LISTENER
+# =========================
 def headphone_listener():
     paths = list_devices()
     sel = selectors.DefaultSelector()
@@ -122,6 +146,9 @@ def headphone_listener():
                         elif k.keycode == 'KEY_PREVIOUSSONG':
                             toggle_emergency_mode()
 
+# =========================
+# MAIN
+# =========================
 if __name__ == '__main__':
 
     model = YOLO("best6_ncnn_model")
@@ -137,8 +164,6 @@ if __name__ == '__main__':
 
     threading.Thread(target=headphone_listener, daemon=True).start()
 
-    last_alert = 0
-
     try:
         while True:
             ret, frame = cap.read()
@@ -148,19 +173,19 @@ if __name__ == '__main__':
             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             latest_frame = frame
 
+            # MODE LOGIC
             if current_mode == MODE_NORMAL:
                 active_classes = OBSTACLE_CLASSES - {"Person"}
-                catch_unknown = False
             elif current_mode == MODE_EVERYTHING:
                 active_classes = OBSTACLE_CLASSES
-                catch_unknown = True
             else:
                 active_classes = OBSTACLE_CLASSES
-                catch_unknown = False
 
             if not scene_active.is_set():
                 results = model(frame, verbose=False)
-                yolo_alert_triggered = False
+
+                best_detection = None
+                best_area = 0
 
                 for r in results:
                     for b in r.boxes:
@@ -172,6 +197,7 @@ if __name__ == '__main__':
 
                         x1, y1, x2, y2 = map(int, b.xyxy[0])
 
+                        # Direction
                         cx_norm = (x1 + x2) / 2 / frame.shape[1]
 
                         if cx_norm < 0.33:
@@ -181,23 +207,27 @@ if __name__ == '__main__':
                         else:
                             direction = "right"
 
+                        area = (x2 - x1) * (y2 - y1)
+
+                        # Pick largest object
+                        if area > best_area:
+                            best_area = area
+                            best_detection = (label, direction)
+
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(frame, f"{label} ({direction})",
                                     (x1, y1 - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.5, (0, 255, 0), 2)
 
-                        # 🔥 KEY FIX: very small throttle (prevents lag)
-                        if not yolo_alert_triggered:
-                            if time.time() - last_alert > 0.2:
-                                speak_text(f"{label} on your {direction}")
-                                last_alert = time.time()
-                            yolo_alert_triggered = True
+                # 🔊 Speak only if changed
+                if best_detection:
+                    label, direction = best_detection
+                    current_announcement = f"{label}-{direction}"
 
-                if catch_unknown and not yolo_alert_triggered:
-                    if time.time() - last_alert > 0.2:
-                        speak_text("Unknown object ahead")
-                        last_alert = time.time()
+                    if current_announcement != last_announcement:
+                        speak_text(f"{label} on your {direction}")
+                        last_announcement = current_announcement
 
             cv2.imshow("Camera", frame)
 
