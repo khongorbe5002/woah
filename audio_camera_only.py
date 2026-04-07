@@ -216,7 +216,6 @@ if __name__ == '__main__':
 
                         # ONLY ONE ALERT PER FRAME + COOLDOWN
                         if not yolo_alert_triggered:
-                            if time.time() - last_alert > 2:
                                 speak_text(f"{label} on your {direction}")
                                 last_alert = time.time()
                             yolo_alert_triggered = True
