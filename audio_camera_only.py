@@ -9,14 +9,8 @@ import selectors
 from evdev import list_devices, InputDevice, categorize, ecodes
 from ultralytics import YOLO
 
-# =========================
-# CPU LIMIT
-# =========================
 torch.set_num_threads(2)
 
-# =========================
-# MODES & CLASSES
-# =========================
 MODE_NORMAL = 0
 MODE_EVERYTHING = 1
 MODE_EMERGENCY = 2
@@ -29,45 +23,35 @@ OBSTACLE_CLASSES = {
     "Vehicle", "Washroom", "Water Fountain"
 }
 
-# =========================
-# GLOBALS
-# =========================
 scene_active = threading.Event()
 latest_frame = None
 
 blip_model = None
 blip_processor = None
 
-# Speech + stability tracking
 last_announcement = ""
 stable_detection = ""
 stable_count = 0
-STABLE_THRESHOLD = 2   # 🔥 faster response
+STABLE_THRESHOLD = 2
 
-# =========================
-# TTS (FIXED - no overlap)
-# =========================
-is_speaking = False
+# 🔥 simple lightweight audio (NO threads)
+last_audio_time = 0
 
 def speak_text(text):
-    global is_speaking
+    global last_audio_time
 
-    if is_speaking:
+    # small gap to prevent stacking (very lightweight)
+    if time.time() - last_audio_time < 0.4:
         return
 
-    def run():
-        global is_speaking
-        is_speaking = True
-        subprocess.call(["espeak", text])
-        is_speaking = False
-
-    threading.Thread(target=run, daemon=True).start()
+    subprocess.Popen(["espeak", text])
+    last_audio_time = time.time()
 
 def speak_blocking(text):
     subprocess.call(["espeak", text])
 
 # =========================
-# SCENE DESCRIPTION
+# Scene (unchanged)
 # =========================
 def run_scene_description(frame):
     global blip_model, blip_processor
@@ -113,7 +97,7 @@ def trigger_scene_global():
         trigger_scene(latest_frame)
 
 # =========================
-# MODE TOGGLES
+# Modes
 # =========================
 def toggle_everything_mode():
     global current_mode
@@ -134,7 +118,7 @@ def toggle_emergency_mode():
         speak_text("Emergency mode")
 
 # =========================
-# HEADPHONE LISTENER
+# Headphones
 # =========================
 def headphone_listener():
     paths = list_devices()
@@ -197,7 +181,7 @@ if __name__ == '__main__':
                 active_classes = OBSTACLE_CLASSES
 
             if not scene_active.is_set():
-                results = model(frame, verbose=False, imgsz=320)  # 🔥 faster
+                results = model(frame, verbose=False)  # 🔥 back to original speed
 
                 best_detection = None
                 best_area = 0
@@ -237,7 +221,6 @@ if __name__ == '__main__':
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.5, (0, 255, 0), 2)
 
-                # 🔊 Stability + speech
                 if best_detection:
                     label, direction = best_detection
                     current_announcement = f"{label}-{direction}"
