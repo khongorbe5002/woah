@@ -42,13 +42,26 @@ blip_processor = None
 last_announcement = ""
 stable_detection = ""
 stable_count = 0
-STABLE_THRESHOLD = 3  # small buffer
+STABLE_THRESHOLD = 2   # 🔥 faster response
 
 # =========================
-# TTS
+# TTS (FIXED - no overlap)
 # =========================
+is_speaking = False
+
 def speak_text(text):
-    subprocess.Popen(["espeak", text])
+    global is_speaking
+
+    if is_speaking:
+        return
+
+    def run():
+        global is_speaking
+        is_speaking = True
+        subprocess.call(["espeak", text])
+        is_speaking = False
+
+    threading.Thread(target=run, daemon=True).start()
 
 def speak_blocking(text):
     subprocess.call(["espeak", text])
@@ -176,7 +189,6 @@ if __name__ == '__main__':
             frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
             latest_frame = frame
 
-            # MODE LOGIC
             if current_mode == MODE_NORMAL:
                 active_classes = OBSTACLE_CLASSES - {"Person"}
             elif current_mode == MODE_EVERYTHING:
@@ -185,7 +197,7 @@ if __name__ == '__main__':
                 active_classes = OBSTACLE_CLASSES
 
             if not scene_active.is_set():
-                results = model(frame, verbose=False)
+                results = model(frame, verbose=False, imgsz=320)  # 🔥 faster
 
                 best_detection = None
                 best_area = 0
@@ -196,7 +208,6 @@ if __name__ == '__main__':
                         label = model.names[cls]
                         conf = float(b.conf[0])
 
-                        # 🔥 Ignore weak detections
                         if conf < 0.5:
                             continue
 
@@ -205,7 +216,6 @@ if __name__ == '__main__':
 
                         x1, y1, x2, y2 = map(int, b.xyxy[0])
 
-                        # Direction
                         cx_norm = (x1 + x2) / 2 / frame.shape[1]
 
                         if cx_norm < 0.33:
@@ -215,22 +225,19 @@ if __name__ == '__main__':
                         else:
                             direction = "right"
 
-                        # Area = closest proxy
                         area = (x2 - x1) * (y2 - y1)
 
-                        # Keep ONLY largest
                         if area > best_area:
                             best_area = area
                             best_detection = (label, direction)
 
-                        # Draw boxes
                         cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                         cv2.putText(frame, f"{label} ({direction})",
                                     (x1, y1 - 10),
                                     cv2.FONT_HERSHEY_SIMPLEX,
                                     0.5, (0, 255, 0), 2)
 
-                # 🔊 Stability buffer + speech
+                # 🔊 Stability + speech
                 if best_detection:
                     label, direction = best_detection
                     current_announcement = f"{label}-{direction}"
