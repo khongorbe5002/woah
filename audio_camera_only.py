@@ -179,7 +179,7 @@ if __name__ == '__main__':
                 active_classes = OBSTACLE_CLASSES
             else:
                 active_classes = OBSTACLE_CLASSES - {"Bottle", "Branch", "Chair",
-                                        "Garbage Can", "Person", "Phone", "Pole",
+                                        "Garbage Can", "Phone", "Pole",
                                         "Push to Open Button", "Sanitizer", "Tree", "Washroom", "Water Fountain"}
 
             if not scene_active.is_set():
