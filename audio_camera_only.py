@@ -178,7 +178,9 @@ if __name__ == '__main__':
             elif current_mode == MODE_EVERYTHING:
                 active_classes = OBSTACLE_CLASSES
             else:
-                active_classes = OBSTACLE_CLASSES
+                active_classes = OBSTACLE_CLASSES - {"Bottle", "Branch", "Chair",
+                                        "Garbage Can", "Person", "Phone", "Pole",
+                                        "Push to Open Button", "Sanitizer", "Tree", "Washroom", "Water Fountain"}
 
             if not scene_active.is_set():
                 results = model(frame, verbose=False)  # 🔥 back to original speed
